@@ -133,6 +133,7 @@ export interface ComparisonPayload {
 export type HostMessage =
   | { type: 'ready' }
   | { type: 'refresh' }
+  | { type: 'newPanel' }
   | { type: 'drop'; side: Side; uris: string[] }
   | { type: 'addWorkspaceFolder'; side?: Side }
   | { type: 'pickTarget'; side?: Side }

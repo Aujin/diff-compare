@@ -9,6 +9,8 @@ const ICONS = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h10l-2.5-2.5M14 11H4l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
   refresh:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.7-4M13 2v3h-3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+  newTab:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="4.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="9.5" y="3" width="4.5" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
   trash:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.2a1 1 0 0 0 1 .8h3.6a1 1 0 0 0 1-.8l.7-8.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
   search:
@@ -54,6 +56,9 @@ export function renderHtml(options: HtmlOptions): string {
 <body>
   <div class="toolbar" role="toolbar" aria-label="Diff Compare 工具栏">
     <div class="tb-group">
+      <button id="btn-new" class="tb-btn" title="新建一个对比标签页">
+        ${ICONS.newTab}<span class="tb-label">新建标签</span>
+      </button>
       <button id="btn-workspace" class="tb-btn" title="添加当前工作区文件夹">
         ${ICONS.folder}<span class="tb-label">工作区文件夹</span>
       </button>

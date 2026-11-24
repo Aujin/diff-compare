@@ -2,7 +2,7 @@
   "name": "diff-compare",
   "displayName": "Diff Compare",
   "description": "在 VS Code 标签页里做双栏对比：比较文本、十六进制与二进制文件，对比整个目录，并按差异逐处或整体同步。",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "Aurumjin",
   "license": "GPL-3.0-or-later",
   "icon": "media/icon.png",
@@ -44,6 +44,17 @@
         "title": "打开对比面板",
         "category": "Diff Compare",
         "icon": "media/diff-compare.svg"
+      },
+      {
+        "command": "diffCompare.newPanel",
+        "title": "新建对比标签",
+        "category": "Diff Compare",
+        "icon": "media/diff-compare.svg"
+      },
+      {
+        "command": "diffCompare.addFromContext",
+        "title": "Diff Compare",
+        "category": "Diff Compare"
       },
       {
         "command": "diffCompare.addWorkspaceFolder",
@@ -106,33 +117,20 @@
       ],
       "editor/title/context": [
         {
-          "command": "diffCompare.addActiveToLeft",
-          "group": "1_diffCompare",
-          "when": "resourceScheme == file"
-        },
-        {
-          "command": "diffCompare.addActiveToRight",
+          "command": "diffCompare.addFromContext",
           "group": "1_diffCompare",
           "when": "resourceScheme == file"
         }
       ],
       "explorer/context": [
         {
-          "command": "diffCompare.addActiveToLeft",
-          "group": "1_diffCompare"
-        },
-        {
-          "command": "diffCompare.addActiveToRight",
+          "command": "diffCompare.addFromContext",
           "group": "1_diffCompare"
         }
       ],
       "commandPalette": [
         {
-          "command": "diffCompare.addActiveToLeft",
-          "when": "false"
-        },
-        {
-          "command": "diffCompare.addActiveToRight",
+          "command": "diffCompare.addFromContext",
           "when": "false"
         }
       ]

@@ -117,7 +117,7 @@ hostMessage({ type: 'comparison', payload: { kind: 'none', viewMode: 'text' } })
 check('左栏为空时显示提示', document.querySelectorAll('#rows-left .empty').length === 1);
 check(
   '工具栏按钮齐全',
-  ['btn-workspace', 'btn-pick', 'btn-refresh', 'btn-swap', 'btn-clear', 'btn-find'].every(
+  ['btn-new', 'btn-workspace', 'btn-pick', 'btn-refresh', 'btn-swap', 'btn-clear', 'btn-find'].every(
     (id) => document.getElementById(id),
   ),
 );
@@ -205,6 +205,8 @@ await wait(250);
 check('无结果提示', document.getElementById('search-count').textContent === '无结果');
 
 section('工具栏');
+document.getElementById('btn-new').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+check('新建标签按钮', Boolean(lastPosted('newPanel')));
 document.getElementById('btn-refresh').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 check('刷新按钮', Boolean(lastPosted('refresh')));
 document.getElementById('btn-swap').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));

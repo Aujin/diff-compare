@@ -26,6 +26,7 @@
     searchInput: $('search-input'),
     searchCount: $('search-count'),
     dropOverlay: $('drop-overlay'),
+    btnNew: $('btn-new'),
     btnWorkspace: $('btn-workspace'),
     btnPick: $('btn-pick'),
     btnRefresh: $('btn-refresh'),
@@ -370,6 +371,20 @@
     state.matches = [];
     state.matchIndex = -1;
 
+    // 标题始终按当前两侧的内容更新（只有一侧时也能看到文件名）。
+    ui.leftTitle.textContent =
+      payload && payload.left
+        ? payload.left.name + (payload.left.path ? ' · ' + payload.left.path : '')
+        : '未选择';
+    ui.leftTitle.title =
+      payload && payload.left ? payload.left.path || payload.left.name : '未选择';
+    ui.rightTitle.textContent =
+      payload && payload.right
+        ? payload.right.name + (payload.right.path ? ' · ' + payload.right.path : '')
+        : '未选择';
+    ui.rightTitle.title =
+      payload && payload.right ? payload.right.path || payload.right.name : '未选择';
+
     if (!payload || payload.kind === 'none') {
       renderEmpty();
       updateSearchCount();
@@ -390,14 +405,6 @@
       renderText(payload);
     }
 
-    if (payload.left) {
-      ui.leftTitle.textContent = payload.left.name + (payload.left.path ? ' · ' + payload.left.path : '');
-      ui.leftTitle.title = payload.left.path || payload.left.name;
-    }
-    if (payload.right) {
-      ui.rightTitle.textContent = payload.right.name + (payload.right.path ? ' · ' + payload.right.path : '');
-      ui.rightTitle.title = payload.right.path || payload.right.name;
-    }
     updateSearchCount();
   }
 
@@ -587,6 +594,7 @@
 
   // ---------------------------------------------------------------- toolbar
 
+  ui.btnNew.addEventListener('click', () => vscode.postMessage({ type: 'newPanel' }));
   ui.btnWorkspace.addEventListener('click', () => vscode.postMessage({ type: 'addWorkspaceFolder' }));
   ui.btnPick.addEventListener('click', () => vscode.postMessage({ type: 'pickTarget' }));
   ui.btnRefresh.addEventListener('click', () => {

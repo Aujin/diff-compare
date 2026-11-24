@@ -26,47 +26,50 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // ----------------------------------------------------------------- uri stub
 
-function makeUri(scheme, fsPath) {
-  const posix = fsPath.replace(/\\/g, '/');
-  return {
-    scheme,
-    fsPath,
-    path: posix.startsWith('/') ? posix : `/${posix}`,
-    toString() {
-      const full = posix.startsWith('/') ? posix : `/${posix}`;
-      const encoded = full
-        .split('/')
-        .map((segment) => encodeURIComponent(segment))
-        .join('/');
-      return `${scheme}://${encoded}`;
-    },
-  };
-}
-
-function parseUri(raw) {
-  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):(?:\/\/)?([^?#]*)/.exec(raw);
-  const scheme = match ? match[1] : 'file';
-  let value = match ? match[2] : raw;
-  try {
-    value = decodeURIComponent(value);
-  } catch {
-    /* keep the raw value */
+class Uri {
+  constructor(scheme, fsPath) {
+    this.scheme = scheme;
+    this.fsPath = fsPath;
+    const posix = fsPath.replace(/\\/g, '/');
+    this.path = posix.startsWith('/') ? posix : `/${posix}`;
   }
-  if (scheme === 'file') {
-    let fsPath = value;
-    if (/^\/[a-zA-Z]:/.test(fsPath)) {
-      fsPath = fsPath.slice(1);
+
+  toString() {
+    const full = this.path;
+    const encoded = full
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    return `${this.scheme}://${encoded}`;
+  }
+
+  static file(fsPath) {
+    return new Uri('file', fsPath);
+  }
+
+  static parse(raw) {
+    const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):(?:\/\/)?([^?#]*)/.exec(raw);
+    const scheme = match ? match[1] : 'file';
+    let value = match ? match[2] : raw;
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      /* keep the raw value */
     }
-    return makeUri('file', fsPath.replace(/\//g, sep));
+    if (scheme === 'file') {
+      let fsPath = value;
+      if (/^\/[a-zA-Z]:/.test(fsPath)) {
+        fsPath = fsPath.slice(1);
+      }
+      return new Uri('file', fsPath.replace(/\//g, sep));
+    }
+    return new Uri(scheme, value);
   }
-  return makeUri(scheme, value);
-}
 
-const Uri = {
-  file: (fsPath) => makeUri('file', fsPath),
-  parse: (raw) => parseUri(raw),
-  joinPath: (base, ...parts) => makeUri(base.scheme, join(base.fsPath, ...parts)),
-};
+  static joinPath(base, ...parts) {
+    return new Uri(base.scheme, join(base.fsPath, ...parts));
+  }
+}
 
 // --------------------------------------------------------------- vscode stub
 
@@ -74,6 +77,9 @@ const state = {
   posted: [],
   receive: undefined,
   panel: undefined,
+  panels: [],
+  quickPickCalls: [],
+  quickPickHandler: undefined,
   commands: new Map(),
   logLines: [],
   warnings: [],
@@ -90,6 +96,7 @@ const configuration = {
 const vscode = {
   Uri,
   ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2, Three: 3 },
+  QuickPickItemKind: { Separator: -1, Default: 0 },
   window: {
     createWebviewPanel(viewType, title, showOptions, options) {
       const panel = {
@@ -100,24 +107,38 @@ const vscode = {
         viewColumn: 1,
         active: true,
         visible: true,
+        messages: [],
         webview: {
           html: '',
           cspSource: 'vscode-webview:',
           asWebviewUri: (uri) => uri,
           postMessage: async (message) => {
+            panel.messages.push(message);
             state.posted.push(message);
             return true;
           },
           onDidReceiveMessage: (handler) => {
+            panel.receive = handler;
             state.receive = handler;
             return { dispose() {} };
           },
         },
-        onDidChangeViewState: () => ({ dispose() {} }),
-        onDidDispose: () => ({ dispose() {} }),
-        reveal: () => {},
-        dispose: () => {},
+        onDidChangeViewState: (handler) => {
+          panel.viewStateHandler = handler;
+          return { dispose() {} };
+        },
+        onDidDispose: (handler) => {
+          panel.disposeHandler = handler;
+          return { dispose() {} };
+        },
+        reveal: () => {
+          state.revealed = panel;
+        },
+        dispose: () => {
+          panel.disposeHandler?.();
+        },
       };
+      state.panels.push(panel);
       state.panel = panel;
       return panel;
     },
@@ -142,7 +163,13 @@ const vscode = {
       state.errors.push(message);
       return undefined;
     },
-    showQuickPick: async () => undefined,
+    showQuickPick: async (items, options) => {
+      state.quickPickCalls.push(items);
+      if (state.quickPickHandler) {
+        return state.quickPickHandler(items, options);
+      }
+      return undefined;
+    },
     showOpenDialog: async () => undefined,
     showTextDocument: async () => undefined,
     registerWebviewPanelSerializer: () => ({ dispose() {} }),
@@ -237,6 +264,17 @@ function lastPayload() {
   return undefined;
 }
 
+/** 某个标签页最后一次收到的比较结果。 */
+function lastPayloadOf(panel) {
+  const messages = panel.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].type === 'comparison') {
+      return messages[index].payload;
+    }
+  }
+  return undefined;
+}
+
 async function send(message) {
   state.posted = [];
   if (!state.receive) {
@@ -281,7 +319,7 @@ const context = {
 extension.activate(context);
 
 section('activation');
-check('11 个命令已注册', state.commands.size === 11, `实际 ${state.commands.size}`);
+check('13 个命令已注册', state.commands.size === 13, `实际 ${state.commands.size}`);
 check('激活日志已写入', state.logLines.some((line) => line.includes('已激活')));
 
 await state.commands.get('diffCompare.open')();
@@ -425,6 +463,87 @@ check(
   state.warnings.length > before &&
     state.warnings[state.warnings.length - 1].includes('不在当前工作区内'),
   state.warnings[state.warnings.length - 1],
+);
+
+section('多标签页');
+await state.commands.get('diffCompare.newPanel')();
+check('新建了第二个对比标签页', state.panels.length === 2, `实际 ${state.panels.length}`);
+const firstPanel = state.panels[0];
+const secondPanel = state.panels[1];
+await send({ type: 'ready' }); // state.receive 现在指向第二个标签页
+check(
+  '第二个标签页初始为空',
+  lastPayloadOf(secondPanel)?.kind === 'none',
+  lastPayloadOf(secondPanel)?.kind,
+);
+
+section('右键加入对比');
+// 1) 加入第 1 个标签的左侧（该栏已有内容 → 询问后替换）
+state.quickPickHandler = async (items) =>
+  items.find(
+    (item) => item.label === '加入左侧' && (item.description ?? '').includes('第 1 个标签'),
+  );
+await state.commands.get('diffCompare.addFromContext')(Uri.file(join(left, 'other.txt')));
+await new Promise((resolve) => setTimeout(resolve, 250));
+check(
+  '第 1 个标签的左栏已更新',
+  lastPayloadOf(firstPanel)?.left?.path === join(left, 'other.txt'),
+  lastPayloadOf(firstPanel)?.left?.path,
+);
+check(
+  '标签页标题带上了文件名',
+  String(firstPanel.title).includes('other.txt'),
+  firstPanel.title,
+);
+check(
+  '第 2 个标签不受影响',
+  lastPayloadOf(secondPanel)?.kind === 'none',
+  lastPayloadOf(secondPanel)?.kind,
+);
+
+// 2) 替换第 2 个标签的右侧
+state.quickPickHandler = async (items) =>
+  items.find(
+    (item) => item.label === '替换右侧' && (item.description ?? '').includes('第 2 个标签'),
+  );
+await state.commands.get('diffCompare.addFromContext')(Uri.file(join(right, 'sample.txt')));
+await new Promise((resolve) => setTimeout(resolve, 250));
+check(
+  '第 2 个标签的右栏已设置',
+  lastPayloadOf(secondPanel)?.right?.path === join(right, 'sample.txt'),
+  lastPayloadOf(secondPanel)?.right?.path,
+);
+
+// 3) 新建标签页并加入右侧
+state.quickPickHandler = async (items) =>
+  items.find(
+    (item) =>
+      item.label === '加入右侧' && (item.description ?? '').includes('新建一个对比标签'),
+  );
+await state.commands.get('diffCompare.addFromContext')(Uri.file(join(left, 'data.bin')));
+await new Promise((resolve) => setTimeout(resolve, 250));
+check('新建了第三个对比标签页', state.panels.length === 3, `实际 ${state.panels.length}`);
+const thirdPanel = state.panels[2];
+check(
+  '新标签页右栏已设置',
+  lastPayloadOf(thirdPanel)?.right?.path === join(left, 'data.bin'),
+  lastPayloadOf(thirdPanel)?.right?.path,
+);
+check(
+  '菜单里列出了已有标签页',
+  state.quickPickCalls.some((items) =>
+    items.some((item) => (item.description ?? '').includes('第 2 个标签')),
+  ),
+);
+
+// 4) 面板工具栏里的「新建标签」按钮
+const panelsBefore = state.panels.length;
+await state.panels[0].receive({ type: 'newPanel' });
+await new Promise((resolve) => setTimeout(resolve, 150));
+check(
+  '工具栏新建按钮可以再开一个标签页',
+  state.panels.length === panelsBefore + 1,
+  `实际 ${state.panels.length}`,
 );
 
 section('清理');

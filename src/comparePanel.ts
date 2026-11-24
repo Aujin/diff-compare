@@ -41,6 +41,13 @@ const VIEW_MODE_KEY = 'diffCompare.viewMode';
 const PANES_KEY = 'diffCompare.panes';
 const MAX_FOLDER_ENTRIES = 20000;
 
+/** 一个对比标签页存档下来的左右两侧。 */
+interface SavedPane {
+  id: string;
+  left?: PaneItem;
+  right?: PaneItem;
+}
+
 function createNonce(): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let nonce = '';
@@ -58,8 +65,15 @@ function sideLabel(side: Side): string {
 export class ComparePanel {
   public static readonly viewType = 'diffCompare.compare';
 
-  private static instance: ComparePanel | undefined;
+  /** 所有打开的对比标签页。 */
+  private static readonly panels = new Set<ComparePanel>();
+  /** 最近获得焦点的对比标签页。 */
+  private static activePanel: ComparePanel | undefined;
+  private static counter = 0;
+  /** 已经被某个标签页认领的存档条目。 */
+  private static readonly claimed = new Set<string>();
 
+  private readonly id: string;
   private readonly panel: vscode.WebviewPanel;
   private readonly context: vscode.ExtensionContext;
   private readonly log: Logger;
@@ -82,13 +96,17 @@ export class ComparePanel {
     this.log = log;
     this.gate = gate;
 
+    ComparePanel.counter += 1;
+    this.id = `${Date.now().toString(36)}-${ComparePanel.counter}`;
+    ComparePanel.claimed.add(this.id);
+
     this.viewMode = context.workspaceState.get<ViewModeSetting>(VIEW_MODE_KEY, 'auto');
-    const saved = context.workspaceState.get<{ left?: PaneItem; right?: PaneItem }>(
-      PANES_KEY,
-      {},
-    );
+    const saved = this.claimSavedPanes();
     this.left = saved.left;
     this.right = saved.right;
+
+    ComparePanel.panels.add(this);
+    ComparePanel.activePanel = this;
 
     this.panel.webview.html = renderHtml({
       webview: this.panel.webview,
@@ -103,18 +121,20 @@ export class ComparePanel {
     );
     this.disposables.push(
       this.panel.onDidChangeViewState(() => {
-        void vscode.commands.executeCommand(
-          'setContext',
-          'diffCompare.focused',
-          this.panel.active,
-        );
+        if (this.panel.active) {
+          ComparePanel.activePanel = this;
+        }
+        const focused = ComparePanel.activePanel?.panel.active === true;
+        void vscode.commands.executeCommand('setContext', 'diffCompare.focused', focused);
       }),
     );
     this.panel.onDidDispose(() => this.dispose());
+    this.updateTitle();
   }
 
   // ------------------------------------------------------------- lifecycle
 
+  /** 新建一个对比标签页（不会复用已经打开的标签页）。 */
   static create(
     context: vscode.ExtensionContext,
     log: Logger,
@@ -130,8 +150,7 @@ export class ComparePanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
       },
     );
-    ComparePanel.instance = new ComparePanel(panel, context, log, gate);
-    return ComparePanel.instance;
+    return new ComparePanel(panel, context, log, gate);
   }
 
   static revive(
@@ -140,12 +159,18 @@ export class ComparePanel {
     log: Logger,
     gate: PathGate,
   ): ComparePanel {
-    ComparePanel.instance = new ComparePanel(panel, context, log, gate);
-    return ComparePanel.instance;
+    return new ComparePanel(panel, context, log, gate);
   }
 
+  /** 当前打开的全部对比标签页。 */
+  static get instances(): ComparePanel[] {
+    return [...ComparePanel.panels];
+  }
+
+  /** 最近获得焦点的对比标签页。 */
   static get current(): ComparePanel | undefined {
-    return ComparePanel.instance;
+    const panels = ComparePanel.instances;
+    return ComparePanel.activePanel ?? panels[panels.length - 1];
   }
 
   reveal(): void {
@@ -158,8 +183,10 @@ export class ComparePanel {
       const disposable = this.disposables.pop();
       disposable?.dispose();
     }
-    if (ComparePanel.instance === this) {
-      ComparePanel.instance = undefined;
+    ComparePanel.panels.delete(this);
+    if (ComparePanel.activePanel === this) {
+      const panels = ComparePanel.instances;
+      ComparePanel.activePanel = panels[panels.length - 1];
     }
   }
 
@@ -179,10 +206,36 @@ export class ComparePanel {
   }
 
   private saveState(): void {
-    void this.context.workspaceState.update(PANES_KEY, {
-      left: this.left,
-      right: this.right,
-    });
+    // 自己的存档永远不再被别人认领（否则新建标签页会复制已有标签页的内容）。
+    ComparePanel.claimed.add(this.id);
+    const saved = this.readSavedPanes().filter((entry) => entry.id !== this.id);
+    saved.push({ id: this.id, left: this.left, right: this.right });
+    void this.context.workspaceState.update(PANES_KEY, saved);
+  }
+
+  /** 读取存档的标签页内容（兼容旧版本保存的对象格式）。 */
+  private readSavedPanes(): SavedPane[] {
+    const raw = this.context.workspaceState.get<SavedPane[] | undefined>(PANES_KEY, undefined);
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw.filter(
+      (entry): entry is SavedPane => Boolean(entry) && typeof entry.id === 'string',
+    );
+  }
+
+  /**
+   * 认领一条存档：窗口重载后恢复标签页时，每个标签页认领一条自己的内容，
+   * 这样可以同时恢复多个对比标签页。
+   */
+  private claimSavedPanes(): { left?: PaneItem; right?: PaneItem } {
+    for (const entry of this.readSavedPanes()) {
+      if (!ComparePanel.claimed.has(entry.id)) {
+        ComparePanel.claimed.add(entry.id);
+        return { left: entry.left, right: entry.right };
+      }
+    }
+    return {};
   }
 
   private async onMessage(message: HostMessage): Promise<void> {
@@ -194,6 +247,11 @@ export class ComparePanel {
         case 'refresh':
           await this.refresh('已重新比较两侧内容。');
           break;
+        case 'newPanel': {
+          const created = ComparePanel.create(this.context, this.log, this.gate);
+          created.reveal();
+          break;
+        }
         case 'drop':
           await this.handleDrop(message.side, message.uris);
           break;
@@ -330,6 +388,7 @@ export class ComparePanel {
     this.left = this.right;
     this.right = previous;
     this.saveState();
+    this.updateTitle();
     void this.refresh();
   }
 
@@ -341,6 +400,7 @@ export class ComparePanel {
       this.right = undefined;
     }
     this.saveState();
+    this.updateTitle();
     void this.refresh();
   }
 
@@ -353,6 +413,60 @@ export class ComparePanel {
   focusSearch(): void {
     this.reveal();
     this.post({ type: 'focusSearch' });
+  }
+
+  /** 某一栏当前的内容。 */
+  sideItem(side: Side): PaneItem | undefined {
+    return side === 'left' ? this.left : this.right;
+  }
+
+  /** 菜单里用来区分多个对比标签页的说明文字。 */
+  summary(): string {
+    const left = this.left?.name;
+    const right = this.right?.name;
+    if (left && right) {
+      return `${left} ↔ ${right}`;
+    }
+    return left ?? right ?? '（空）';
+  }
+
+  /**
+   * 把一个文件或文件夹放进某一栏。
+   *
+   * mode='add' 时如果该栏已经有内容，会先问是替换还是新建标签；
+   * mode='replace' 直接覆盖。
+   */
+  async placeItem(
+    uri: vscode.Uri,
+    side: Side,
+    mode: 'add' | 'replace' = 'replace',
+  ): Promise<boolean> {
+    const item = await this.resolveTarget(uri);
+    if (!item) {
+      return false;
+    }
+    const existing = this.sideItem(side);
+    if (mode === 'add' && existing) {
+      const picked = await vscode.window.showWarningMessage(
+        `${sideLabel(side)}侧已经有「${existing.name}」，要怎么处理？`,
+        { modal: true },
+        '替换该栏',
+        '新建标签',
+        '取消',
+      );
+      if (picked === '新建标签') {
+        const created = ComparePanel.create(this.context, this.log, this.gate);
+        await created.placeItem(uri, side, 'replace');
+        created.reveal();
+        return true;
+      }
+      if (picked !== '替换该栏') {
+        return false;
+      }
+    }
+    this.setSide(side, item);
+    await this.refresh();
+    return true;
   }
 
   /**
@@ -402,6 +516,22 @@ export class ComparePanel {
       this.right = item;
     }
     this.saveState();
+    this.updateTitle();
+  }
+
+  /** 标签页标题带上左右两侧的文件名，方便区分多个对比标签页。 */
+  private updateTitle(): void {
+    const left = this.left?.name;
+    const right = this.right?.name;
+    if (left && right) {
+      this.panel.title = `Diff Compare · ${left} ↔ ${right}`;
+    } else if (left) {
+      this.panel.title = `Diff Compare · ${left}`;
+    } else if (right) {
+      this.panel.title = `Diff Compare · ${right}`;
+    } else {
+      this.panel.title = 'Diff Compare';
+    }
   }
 
   private async chooseSide(): Promise<Side | undefined> {
@@ -489,7 +619,13 @@ export class ComparePanel {
     const left = this.left;
     const right = this.right;
     if (!left || !right) {
-      this.payload = { kind: 'none', viewMode: 'text' };
+      // 只填了一栏时也要把这一栏的信息带出去，面板标题才能显示文件名。
+      this.payload = {
+        kind: 'none',
+        viewMode: 'text',
+        left: left ? this.describe(left) : undefined,
+        right: right ? this.describe(right) : undefined,
+      };
       this.post({ type: 'comparison', payload: this.payload });
       if (info) {
         this.post({ type: 'info', message: info });
