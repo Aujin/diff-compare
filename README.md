@@ -239,6 +239,9 @@
 code --install-extension Aurumjin.diff-compare
 ```
 
+**从 GitHub 下载**：仓库的 *Releases* 页挂着打包好的 `.vsix`，
+见 <https://github.com/Aujin/diff-compare/releases>。
+
 本地构建：
 
 ```bash

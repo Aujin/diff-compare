@@ -25,7 +25,7 @@
 npm install          # 只装依赖
 npm run typecheck    # 类型检查
 npm run build        # 编译到 dist/
-npm run test         # 引擎自测（diff / 二进制 / 目录 / 同步）
+npm run test         # 四组自检：引擎 / 协议 / 宿主端 / 界面端
 npm run package      # 生成 diff-compare-<version>.vsix
 ```
 
@@ -98,8 +98,12 @@ git push -u origin main
 - 仓库页 → **Actions** → 左侧 **Publish** → 右侧 **Run workflow**；
 - 或者推送一个 tag：`git tag v0.1.0 && git push origin v0.1.0`。
 
-工作流会执行 `npm ci → typecheck → build → test → npx @vscode/vsce publish --oidc`，
-凭据由 GitHub 的 OIDC 令牌换取，**仓库里不需要保存 PAT**。
+工作流会执行 `npm ci → typecheck → build → test → npm run package →
+npx @vscode/vsce publish --oidc`，凭据由 GitHub 的 OIDC 令牌换取，
+**仓库里不需要保存 PAT**。
+
+打 tag 触发时，工作流还会把打包好的 `.vsix` 传到一个 **GitHub Release**
+（仓库页右侧的 *Releases*），可以直接下载安装，不用等 Marketplace 审核。
 
 > ⚠️ `--oidc` 需要 **@vscode/vsce 4.x**（3.x 没有这个参数，工作流会报
 > `error: unknown option '--oidc'`）。仓库里的 `devDependencies` 固定为

@@ -19,7 +19,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -40,6 +40,15 @@ jobs:
       - run: npm run build
 
       - run: npm run test
+
+      - run: npm run package
+
+      - name: 上传到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: diff-compare-*.vsix
+          generate_release_notes: true
 
       - name: Publish to the Visual Studio Marketplace
         # Trusted Publishing 用 OIDC 换取一次性凭据，这里不需要、也不应该出现 PAT。
