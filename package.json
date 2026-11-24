@@ -1,0 +1,209 @@
+{
+  "name": "diff-compare",
+  "displayName": "Diff Compare",
+  "description": "在 VS Code 标签页里做双栏对比：比较文本、十六进制与二进制文件，对比整个目录，并按差异逐处或整体同步。",
+  "version": "0.1.0",
+  "publisher": "Aurumjin",
+  "license": "GPL-3.0-or-later",
+  "icon": "media/icon.png",
+  "homepage": "https://github.com/Aujin/diff-compare",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aujin/diff-compare.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Aujin/diff-compare/issues"
+  },
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "diff",
+    "compare",
+    "directory compare",
+    "hex",
+    "binary"
+  ],
+  "galleryBanner": {
+    "color": "#1F2430",
+    "theme": "dark"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "diffCompare.open",
+        "title": "打开对比面板",
+        "category": "Diff Compare",
+        "icon": "media/diff-compare.svg"
+      },
+      {
+        "command": "diffCompare.addWorkspaceFolder",
+        "title": "添加当前工作区文件夹",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.pickTarget",
+        "title": "选择要对比的文件或文件夹…",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.swap",
+        "title": "交换左右两栏",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.clear",
+        "title": "清空对比",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.addActiveToLeft",
+        "title": "添加到对比左侧",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.addActiveToRight",
+        "title": "添加到对比右侧",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.syncAllToLeft",
+        "title": "把右侧差异同步到左侧",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.syncAllToRight",
+        "title": "把左侧差异同步到右侧",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.find",
+        "title": "在对比结果中查找",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.showLogs",
+        "title": "显示日志",
+        "category": "Diff Compare"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "diffCompare.open",
+          "group": "navigation",
+          "when": "editorIsOpen"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "diffCompare.addActiveToLeft",
+          "group": "1_diffCompare",
+          "when": "resourceScheme == file"
+        },
+        {
+          "command": "diffCompare.addActiveToRight",
+          "group": "1_diffCompare",
+          "when": "resourceScheme == file"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "diffCompare.addActiveToLeft",
+          "group": "1_diffCompare"
+        },
+        {
+          "command": "diffCompare.addActiveToRight",
+          "group": "1_diffCompare"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "diffCompare.addActiveToLeft",
+          "when": "false"
+        },
+        {
+          "command": "diffCompare.addActiveToRight",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "diffCompare.find",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "diffCompare.focused"
+      }
+    ],
+    "configuration": {
+      "title": "Diff Compare",
+      "properties": {
+        "diffCompare.allowOutsideWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "允许对比工作区之外的文件或文件夹。关闭时（默认）第一次访问工作区之外的路径会询问一次，并记住你的选择。"
+        },
+        "diffCompare.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/.hg/**",
+            "**/.svn/**"
+          ],
+          "markdownDescription": "目录对比时忽略的路径（glob 列表，相对于被比较的目录根）。"
+        },
+        "diffCompare.maxFileSize": {
+          "type": "number",
+          "default": 32,
+          "markdownDescription": "参与对比的最大文件大小（MB）。超过该大小的文件不比较内容：目录对比只比较文件大小，单文件对比会给出提示。"
+        },
+        "diffCompare.defaultViewMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "text",
+            "hex",
+            "binary"
+          ],
+          "enumDescriptions": [
+            "自动识别（二进制文件默认用十六进制视图打开）",
+            "始终按文本比较",
+            "始终按十六进制比较",
+            "始终按二进制比较"
+          ],
+          "default": "auto",
+          "description": "打开文件时使用的默认视图模式。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "node build.mjs --noEmit",
+    "test": "node build.mjs && node tools/selftest.mjs && node tools/check-protocol.mjs && node tools/host-harness.mjs && node tools/webview-harness.mjs",
+    "package": "vsce package --no-dependencies --allow-missing-repository",
+    "vscode:prepublish": "npm run build",
+    "icon": "node tools/make-icon.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/vscode": "^1.84.0",
+    "@vscode/vsce": "^4.1.1",
+    "jsdom": "^31.0.1",
+    "typescript": "^5.7.3"
+  }
+}
