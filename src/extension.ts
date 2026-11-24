@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { ComparePanel } from './comparePanel';
+import { detectLocale, t } from './i18n';
+import type { Locale } from './i18n';
 import { Logger } from './logger';
 import { PathGate } from './policy';
 import type { Side } from './types';
@@ -23,7 +25,16 @@ export function activate(context: vscode.ExtensionContext): void {
   const pathGate = new PathGate(context);
   logger = log;
   context.subscriptions.push(log);
-  log.info(`Diff Compare 已激活（版本 ${context.extension?.packageJSON?.version ?? '未知'}）。`);
+
+  const locale: Locale = detectLocale();
+  const text = (key: string, params?: Record<string, string | number>): string =>
+    t(locale, key, params);
+
+  log.info(
+    text('log.activated', {
+      version: context.extension?.packageJSON?.version ?? text('common.unknown'),
+    }),
+  );
 
   const openPanel = (): ComparePanel => {
     const existing = ComparePanel.current;
@@ -42,7 +53,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const uri = source ?? vscode.window.activeTextEditor?.document.uri;
     if (!uri) {
       void vscode.window.showWarningMessage(
-        '请先在资源管理器或编辑器标签页里选中一个文件或文件夹。',
+        text('warn.noContextSelection'),
       );
       return;
     }
@@ -50,49 +61,52 @@ export function activate(context: vscode.ExtensionContext): void {
     const items: PlaceItem[] = [];
     items.push({
       kind: vscode.QuickPickItemKind.Separator,
-      label: '新建对比标签',
+      label: text('menu.newPanelGroup'),
     });
     items.push({
-      label: '加入左侧',
-      description: '新建一个对比标签并放入左栏',
+      label: text('menu.addLeft'),
+      description: text('menu.newPanelHint'),
       action: { mode: 'replace', side: 'left', createNew: true },
     });
     items.push({
-      label: '加入右侧',
-      description: '新建一个对比标签并放入右栏',
+      label: text('menu.addRight'),
+      description: text('menu.newPanelHint'),
       action: { mode: 'replace', side: 'right', createNew: true },
     });
 
     ComparePanel.instances.forEach((panel, index) => {
-      const title = `第 ${index + 1} 个标签 · ${panel.summary()}`;
+      const title = text('menu.panelItem', {
+        n: index + 1,
+        summary: panel.summary(),
+      });
       items.push({
         kind: vscode.QuickPickItemKind.Separator,
         label: title,
       });
       items.push({
-        label: '加入左侧',
+        label: text('menu.addLeft'),
         description: title,
         action: { mode: 'add', side: 'left', panel, createNew: false },
       });
       items.push({
-        label: '加入右侧',
+        label: text('menu.addRight'),
         description: title,
         action: { mode: 'add', side: 'right', panel, createNew: false },
       });
       items.push({
-        label: '替换左侧',
+        label: text('menu.replaceLeft'),
         description: title,
         action: { mode: 'replace', side: 'left', panel, createNew: false },
       });
       items.push({
-        label: '替换右侧',
+        label: text('menu.replaceRight'),
         description: title,
         action: { mode: 'replace', side: 'right', panel, createNew: false },
       });
     });
 
     const picked = (await vscode.window.showQuickPick(items, {
-      placeHolder: '选择要加入对比的位置',
+      placeHolder: text('menu.pickPlaceholder'),
       matchOnDescription: true,
     })) as PlaceItem | undefined;
     const action = picked?.action;
@@ -112,7 +126,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('diffCompare.open', () => {
-      openPanel();
+      ComparePanel.create(context, log, pathGate);
     }),
     vscode.commands.registerCommand('diffCompare.newPanel', () => {
       ComparePanel.create(context, log, pathGate);
@@ -147,6 +161,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('diffCompare.find', () => {
       openPanel().focusSearch();
     }),
+    vscode.commands.registerCommand('diffCompare.undo', async () => {
+      await openPanel().undo();
+    }),
     vscode.commands.registerCommand('diffCompare.showLogs', () => {
       log.show();
     }),
@@ -165,7 +182,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerUriHandler({
       handleUri(uri: vscode.Uri) {
-        log.info(`收到深链：${uri.toString()}`);
+        log.info(text('log.deepLink', { uri: uri.toString() }));
         const params = new URLSearchParams(uri.query);
         const left = params.get('left') ?? undefined;
         const right = params.get('right') ?? undefined;

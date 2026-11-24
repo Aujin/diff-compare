@@ -19,6 +19,13 @@ body {
   background: var(--vscode-editor-background);
 }
 
+/* body 必须是一个纵向 flex 容器，否则 .columns 的 min-height:0 不生效，
+   两侧的内容就会一直往下撑，永远不会出现滚动条。 */
+body {
+  display: flex;
+  flex-direction: column;
+}
+
 /* ---------- toolbar ---------- */
 
 .toolbar {
@@ -303,6 +310,31 @@ body {
 
 .row.r-dir {
   font-weight: 600;
+}
+
+/* ---------- 目录树 ---------- */
+
+.tree-toggle {
+  display: inline-block;
+  width: 14px;
+  flex: 0 0 auto;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0.8;
+  user-select: none;
+}
+
+.tree-toggle:hover {
+  opacity: 1;
+}
+
+.tree-name {
+  white-space: pre;
+}
+
+.indent {
+  display: inline-block;
+  flex: 0 0 auto;
 }
 
 .row.r-only-left .tx,

@@ -2,7 +2,7 @@
   "name": "diff-compare",
   "displayName": "Diff Compare",
   "description": "在 VS Code 标签页里做双栏对比：比较文本、十六进制与二进制文件，对比整个目录，并按差异逐处或整体同步。",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "Aurumjin",
   "license": "GPL-3.0-or-later",
   "icon": "media/icon.png",
@@ -41,76 +41,81 @@
     "commands": [
       {
         "command": "diffCompare.open",
-        "title": "打开对比面板",
+        "title": "%cmd.open%",
         "category": "Diff Compare",
         "icon": "media/diff-compare.svg"
       },
       {
         "command": "diffCompare.newPanel",
-        "title": "新建对比标签",
+        "title": "%cmd.newPanel%",
         "category": "Diff Compare",
         "icon": "media/diff-compare.svg"
       },
       {
         "command": "diffCompare.addFromContext",
-        "title": "Diff Compare",
+        "title": "%cmd.addFromContext%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.addWorkspaceFolder",
-        "title": "添加当前工作区文件夹",
+        "title": "%cmd.addWorkspaceFolder%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.pickTarget",
-        "title": "选择要对比的文件或文件夹…",
+        "title": "%cmd.pickTarget%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.swap",
-        "title": "交换左右两栏",
+        "title": "%cmd.swap%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.clear",
-        "title": "清空对比",
+        "title": "%cmd.clear%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.addActiveToLeft",
-        "title": "添加到对比左侧",
+        "title": "%cmd.addActiveToLeft%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.addActiveToRight",
-        "title": "添加到对比右侧",
+        "title": "%cmd.addActiveToRight%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.syncAllToLeft",
-        "title": "把右侧差异同步到左侧",
+        "title": "%cmd.syncAllToLeft%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.syncAllToRight",
-        "title": "把左侧差异同步到右侧",
+        "title": "%cmd.syncAllToRight%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.find",
-        "title": "在对比结果中查找",
+        "title": "%cmd.find%",
+        "category": "Diff Compare"
+      },
+      {
+        "command": "diffCompare.undo",
+        "title": "%cmd.undo%",
         "category": "Diff Compare"
       },
       {
         "command": "diffCompare.showLogs",
-        "title": "显示日志",
+        "title": "%cmd.showLogs%",
         "category": "Diff Compare"
       }
     ],
     "menus": {
       "editor/title": [
         {
-          "command": "diffCompare.open",
+          "command": "diffCompare.newPanel",
           "group": "navigation",
           "when": "editorIsOpen"
         }
@@ -132,6 +137,10 @@
         {
           "command": "diffCompare.addFromContext",
           "when": "false"
+        },
+        {
+          "command": "diffCompare.open",
+          "when": "false"
         }
       ]
     },
@@ -149,7 +158,7 @@
         "diffCompare.allowOutsideWorkspace": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "允许对比工作区之外的文件或文件夹。关闭时（默认）第一次访问工作区之外的路径会询问一次，并记住你的选择。"
+          "markdownDescription": "%config.allowOutsideWorkspace%"
         },
         "diffCompare.exclude": {
           "type": "array",
@@ -162,12 +171,12 @@
             "**/.hg/**",
             "**/.svn/**"
           ],
-          "markdownDescription": "目录对比时忽略的路径（glob 列表，相对于被比较的目录根）。"
+          "markdownDescription": "%config.exclude%"
         },
         "diffCompare.maxFileSize": {
           "type": "number",
           "default": 32,
-          "markdownDescription": "参与对比的最大文件大小（MB）。超过该大小的文件不比较内容：目录对比只比较文件大小，单文件对比会给出提示。"
+          "markdownDescription": "%config.maxFileSize%"
         },
         "diffCompare.defaultViewMode": {
           "type": "string",
@@ -178,13 +187,13 @@
             "binary"
           ],
           "enumDescriptions": [
-            "自动识别（二进制文件默认用十六进制视图打开）",
-            "始终按文本比较",
-            "始终按十六进制比较",
-            "始终按二进制比较"
+            "%config.mode.auto%",
+            "%config.mode.text%",
+            "%config.mode.hex%",
+            "%config.mode.binary%"
           ],
           "default": "auto",
-          "description": "打开文件时使用的默认视图模式。"
+          "description": "%config.defaultViewMode%"
         }
       }
     }

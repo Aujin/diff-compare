@@ -113,6 +113,49 @@ for (const id of usedIds) {
   }
 }
 
+// ---------------------------------------------------------------- i18n
+
+const packageJson = JSON.parse(read('package.json'));
+const nlsDefault = JSON.parse(read('package.nls.json'));
+const nlsZh = JSON.parse(read('package.nls.zh-cn.json'));
+
+// Every "%key%" placeholder in package.json needs an entry in both nls files.
+const nlsRefs = new Set();
+for (const match of JSON.stringify(packageJson).matchAll(/"%([a-zA-Z][a-zA-Z0-9_.]*)%"/g)) {
+  nlsRefs.add(match[1]);
+}
+for (const key of nlsRefs) {
+  if (!(key in nlsDefault)) {
+    failures.push(`package.json references %${key}% but package.nls.json has no such key`);
+  }
+  if (!(key in nlsZh)) {
+    failures.push(`package.json references %${key}% but package.nls.zh-cn.json has no such key`);
+  }
+}
+const nlsDefaultKeys = Object.keys(nlsDefault).sort();
+const nlsZhKeys = Object.keys(nlsZh).sort();
+if (nlsDefaultKeys.join('|') !== nlsZhKeys.join('|')) {
+  failures.push('package.nls.json and package.nls.zh-cn.json do not have the same keys');
+}
+
+// Every key used in the code must exist in the i18n tables.
+const i18nSource = read('src/i18n.ts');
+const definedKeys = new Set();
+for (const match of i18nSource.matchAll(/'([a-zA-Z][a-zA-Z0-9_]*\.[a-zA-Z][a-zA-Z0-9_]*)'\s*:/g)) {
+  definedKeys.add(match[1]);
+}
+const usedKeys = new Set();
+for (const source of [panelTs, read('src/extension.ts'), webviewJs]) {
+  for (const match of source.matchAll(/\btext\(\s*'([a-zA-Z][a-zA-Z0-9_]*\.[a-zA-Z][a-zA-Z0-9_]*)'/g)) {
+    usedKeys.add(match[1]);
+  }
+}
+for (const key of usedKeys) {
+  if (!definedKeys.has(key)) {
+    failures.push(`the code uses the i18n key "${key}" but src/i18n.ts does not define it`);
+  }
+}
+
 if (failures.length > 0) {
   console.error('protocol check failed:');
   for (const failure of failures) {
@@ -125,3 +168,4 @@ console.log('protocol check ok');
 console.log(`  host messages : ${[...hostTypes].join(', ')}`);
 console.log(`  webview messages: ${[...webviewTypes].join(', ')}`);
 console.log(`  html ids checked: ${htmlIds.size}`);
+console.log(`  nls keys checked: ${nlsRefs.size} (package.json) / ${definedKeys.size} (src/i18n.ts)`);

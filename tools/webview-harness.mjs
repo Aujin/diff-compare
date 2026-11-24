@@ -113,13 +113,43 @@ function lastPosted(type) {
 
 section('初始化');
 check('脚本已发送 ready', Boolean(lastPosted('ready')));
+hostMessage({
+  type: 'state',
+  viewMode: 'auto',
+  hasLeft: false,
+  hasRight: false,
+  canUndo: false,
+  locale: 'zh-cn',
+  strings: {
+    'status.ready': '就绪',
+    'search.noResult': '无结果',
+    'status.empty': '拖入文件开始比较',
+  },
+});
 hostMessage({ type: 'comparison', payload: { kind: 'none', viewMode: 'text' } });
 check('左栏为空时显示提示', document.querySelectorAll('#rows-left .empty').length === 1);
 check(
+  '空状态提示使用下发的文案',
+  document.querySelector('#rows-left .empty').textContent === '拖入文件开始比较',
+  document.querySelector('#rows-left .empty')?.textContent,
+);
+check(
   '工具栏按钮齐全',
-  ['btn-new', 'btn-workspace', 'btn-pick', 'btn-refresh', 'btn-swap', 'btn-clear', 'btn-find'].every(
-    (id) => document.getElementById(id),
-  ),
+  [
+    'btn-new',
+    'btn-pick',
+    'btn-refresh',
+    'btn-swap',
+    'btn-undo',
+    'btn-clear',
+    'btn-find',
+  ].every((id) => document.getElementById(id)),
+);
+check('工作区文件夹按钮已移除', !document.getElementById('btn-workspace'));
+check(
+  '面板头部不再有「使用当前编辑器」按钮',
+  document.querySelectorAll('.mini[data-action="active-left"], .mini[data-action="active-right"]')
+    .length === 0,
 );
 
 const textPayload = {
@@ -213,6 +243,12 @@ document.getElementById('btn-swap').dispatchEvent(new window.MouseEvent('click',
 check('交换按钮', Boolean(lastPosted('swap')));
 document.getElementById('btn-clear').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 check('清空按钮', Boolean(lastPosted('clear')));
+document.getElementById('btn-undo').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+check(
+  '撤销按钮',
+  JSON.stringify(lastPosted('undo')) === JSON.stringify({ type: 'undo' }),
+  JSON.stringify(lastPosted('undo')),
+);
 document
   .querySelector('.mode-btn[data-mode="hex"]')
   .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
@@ -250,6 +286,47 @@ check(
     JSON.stringify({ target: 'left', type: 'syncEntry', path: 'changed.txt' }),
   JSON.stringify(lastPosted('syncEntry')),
 );
+
+section('目录树折叠');
+hostMessage({
+  type: 'comparison',
+  payload: {
+    kind: 'folder',
+    viewMode: 'text',
+    folder: {
+      entries: [
+        { path: 'sub', type: 'dir', status: 'modified' },
+        { path: 'sub/a.txt', type: 'file', status: 'modified' },
+        { path: 'b.txt', type: 'file', status: 'same' },
+      ],
+      leftCount: 2,
+      rightCount: 2,
+    },
+  },
+});
+check('初始只显示顶层条目', document.querySelectorAll('#rows-left .row').length === 2);
+check('目录有展开按钮', document.querySelectorAll('#rows-left .tree-toggle').length === 1);
+const treeToggle = document.querySelector('#rows-left .tree-toggle');
+treeToggle.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('展开后显示子目录内容', document.querySelectorAll('#rows-left .row').length === 3);
+const treeRows = Array.from(document.querySelectorAll('#rows-left .row'));
+check(
+  '子条目缩进',
+  (treeRows[1]?.querySelector('.indent')?.style.width ?? '') === '14px',
+  treeRows[1]?.querySelector('.indent')?.style.width,
+);
+treeToggle.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('再次点击后重新折叠', document.querySelectorAll('#rows-left .row').length === 2);
+
+section('样式：长内容可以滚动');
+const css = readFileSync(join(root, 'media', 'compare.css'), 'utf8');
+check(
+  'body 是纵向 flex 容器',
+  /body\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/.test(css),
+);
+check('两栏内容允许滚动', /\.pane-body\s*\{[^}]*overflow:\s*auto/.test(css));
 
 section('二进制比较渲染');
 hostMessage({

@@ -13,6 +13,29 @@
   const ARROW_RIGHT =
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h9.5M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
 
+  /** 当前语言的文案（由扩展端下发，缺失时回退到键名）。 */
+  const strings = Object.create(null);
+
+  /**
+   * 取一条文案。
+   *
+   * @param {string} key 文案键
+   * @param {string} [fallback] 没有下发这条文案时的备用文本
+   * @param {Record<string, string | number>} [params] `{name}` 形式的占位符
+   */
+  function text(key, fallback, params) {
+    let value = strings[key];
+    if (value === undefined) {
+      value = fallback === undefined ? key : fallback;
+    }
+    if (params) {
+      value = value.replace(/\{(\w+)\}/g, (match, name) =>
+        Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match,
+      );
+    }
+    return value;
+  }
+
   const ui = {
     leftTitle: $('title-left'),
     rightTitle: $('title-right'),
@@ -27,10 +50,10 @@
     searchCount: $('search-count'),
     dropOverlay: $('drop-overlay'),
     btnNew: $('btn-new'),
-    btnWorkspace: $('btn-workspace'),
     btnPick: $('btn-pick'),
     btnRefresh: $('btn-refresh'),
     btnSwap: $('btn-swap'),
+    btnUndo: $('btn-undo'),
     btnClear: $('btn-clear'),
     btnFind: $('btn-find'),
     syncAllLeft: $('sync-all-left'),
@@ -43,6 +66,7 @@
     viewMode: 'auto',
     hasLeft: false,
     hasRight: false,
+    canUndo: false,
     /** @type {{left?: HTMLElement, right?: HTMLElement, leftText?: HTMLElement, rightText?: HTMLElement}[]} */
     rows: [],
     /** @type {{left: string, right: string}[]} */
@@ -52,17 +76,21 @@
     matchIndex: -1,
     rowHeight: ROW_H,
     busy: false,
+    /** 目录树里被折叠的目录（相对路径）。 */
+    collapsed: new Set(),
+    /** 已经出现过的目录，用来判断哪些目录是新出现的（默认折叠）。 */
+    knownDirs: new Set(),
   };
 
   // ---------------------------------------------------------------- helpers
 
-  function el(tag, className, text) {
+  function el(tag, className, textContent) {
     const node = document.createElement(tag);
     if (className) {
       node.className = className;
     }
-    if (text !== undefined && text !== null) {
-      node.textContent = text;
+    if (textContent !== undefined && textContent !== null) {
+      node.textContent = textContent;
     }
     return node;
   }
@@ -76,7 +104,7 @@
   }
 
   function setStatus(message, isError) {
-    ui.status.textContent = message || '就绪';
+    ui.status.textContent = message || text('status.ready', 'Ready');
     ui.status.classList.toggle('error', Boolean(isError));
   }
 
@@ -92,6 +120,7 @@
     ui.syncAllRight.disabled = !both || state.busy;
     ui.btnSwap.disabled = !(state.hasLeft || state.hasRight);
     ui.btnClear.disabled = !(state.hasLeft || state.hasRight);
+    ui.btnUndo.disabled = !state.canUndo || state.busy;
   }
 
   function updateModeButtons() {
@@ -134,15 +163,13 @@
 
   function renderEmpty() {
     const placeholder = el('div', 'empty');
-    placeholder.innerHTML =
-      '把文件、目录或编辑器标签页拖到左右两栏即可开始比较。<br />' +
-      '也可以使用工具栏的「工作区文件夹」「添加文件」按钮。';
+    placeholder.innerHTML = text('status.empty', 'Drag a file, folder or editor tab into either column to start comparing.');
     ui.leftRows.appendChild(placeholder);
   }
 
   function renderNotice(notice) {
     const placeholder = el('div', 'empty');
-    placeholder.textContent = notice || '无法比较这两个目标。';
+    placeholder.textContent = notice || text('status.cannotCompare', 'These two targets cannot be compared.');
     ui.leftRows.appendChild(placeholder);
     setStatus(notice || '', true);
   }
@@ -181,9 +208,15 @@
     measureRowHeight();
 
     payload.text.hunks.forEach((hunk) => {
-      const left = arrowButton('left', { type: 'syncHunk', hunkId: hunk.id }, '把右侧这一处同步到左侧');
-      const right = arrowButton('right', { type: 'syncHunk', hunkId: hunk.id }, '把左侧这一处同步到右侧');
-      addGutterItem(hunk.row, [left, right], hunk.kind === 'insert' ? '新增' : hunk.kind === 'delete' ? '删除' : '修改');
+      const left = arrowButton('left', { type: 'syncHunk', hunkId: hunk.id }, text('arrow.hunkLeft', 'Copy this difference to the left side'));
+      const right = arrowButton('right', { type: 'syncHunk', hunkId: hunk.id }, text('arrow.hunkRight', 'Copy this difference to the right side'));
+      const info =
+        hunk.kind === 'insert'
+          ? text('gutter.insert', 'Added')
+          : hunk.kind === 'delete'
+            ? text('gutter.delete', 'Removed')
+            : text('gutter.change', 'Changed');
+      addGutterItem(hunk.row, [left, right], info);
     });
   }
 
@@ -200,7 +233,7 @@
     return out;
   }
 
-  function hexRow(node, offset, hex, mask) {
+  function hexRow(offset, hex, mask) {
     const row = el('div', 'row hex');
     row.appendChild(el('span', 'ln', offsetHex(offset)));
     const hexCell = el('span', 'tx hex');
@@ -239,8 +272,8 @@
       if (!isHex && !affected.has(index)) {
         return;
       }
-      const left = hexRow(null, row.lo, row.lb || '', row.mask);
-      const right = hexRow(null, row.ro, row.rb || '', row.mask);
+      const left = hexRow(row.lo, row.lb || '', row.mask);
+      const right = hexRow(row.ro, row.rb || '', row.mask);
       fragLeft.appendChild(left);
       fragRight.appendChild(right);
       state.rows.push({ left: left, right: right });
@@ -255,57 +288,164 @@
     measureRowHeight();
 
     binary.ranges.forEach((range) => {
-      const left = arrowButton('left', { type: 'syncRange', rangeId: range.id }, '把右侧这一段同步到左侧');
-      const right = arrowButton('right', { type: 'syncRange', rangeId: range.id }, '把左侧这一段同步到右侧');
-      const info = `${range.lEnd - range.lStart} / ${range.rEnd - range.rStart} 字节`;
+      const left = arrowButton('left', { type: 'syncRange', rangeId: range.id }, text('arrow.rangeLeft', 'Copy these bytes to the left side'));
+      const right = arrowButton('right', { type: 'syncRange', rangeId: range.id }, text('arrow.rangeRight', 'Copy these bytes to the right side'));
+      const info = text('gutter.bytes', '{left} / {right} bytes', { left: range.lEnd - range.lStart, right: range.rEnd - range.rStart });
       addGutterItem(range.row, [left, right], info);
     });
   }
 
+  // -------------------------------------------------------------- 目录树
+
+  /**
+   * 把扁平的条目列表变成目录树。
+   *
+   * @param {{path: string, type: string, status: string}[]} entries
+   */
+  function buildFolderTree(entries) {
+    const root = { path: '', name: '', type: 'dir', status: 'same', entry: null, children: [], index: new Map() };
+    root.index.set('', root);
+
+    function ensureDir(dirPath) {
+      const existing = root.index.get(dirPath);
+      if (existing) {
+        return existing;
+      }
+      const parts = dirPath.split('/');
+      const name = parts[parts.length - 1];
+      const parentPath = parts.slice(0, parts.length - 1).join('/');
+      const parent = ensureDir(parentPath);
+      const dir = { path: dirPath, name: name, type: 'dir', status: 'same', entry: null, children: [] };
+      parent.children.push(dir);
+      root.index.set(dirPath, dir);
+      return dir;
+    }
+
+    entries.forEach((entry) => {
+      const parts = entry.path.split('/');
+      const name = parts[parts.length - 1];
+      const parentPath = parts.slice(0, parts.length - 1).join('/');
+      const parent = ensureDir(parentPath);
+      if (entry.type === 'dir') {
+        const dir = ensureDir(entry.path);
+        dir.status = entry.status;
+        dir.entry = entry;
+      } else {
+        parent.children.push({
+          path: entry.path,
+          name: name,
+          type: entry.type,
+          status: entry.status,
+          entry: entry,
+          children: [],
+        });
+      }
+    });
+    return root;
+  }
+
+  /** 展开后的可见条目（按顺序）。 */
+  function visibleNodes(root) {
+    const out = [];
+    const walk = (node) => {
+      node.children.forEach((child) => {
+        out.push(child);
+        if (child.type === 'dir' && !state.collapsed.has(child.path)) {
+          walk(child);
+        }
+      });
+    };
+    walk(root);
+    return out;
+  }
+
+  function collectDirPaths(root, out) {
+    root.children.forEach((child) => {
+      if (child.type === 'dir') {
+        out.push(child.path);
+        collectDirPaths(child, out);
+      }
+    });
+    return out;
+  }
+
   function renderFolder(payload) {
     const entries = payload.folder.entries;
+    const root = buildFolderTree(entries);
+    // 初始状态：新出现的目录默认折叠；用户手动展开过的目录保持展开。
+    collectDirPaths(root, []).forEach((path) => {
+      if (!state.knownDirs.has(path)) {
+        state.knownDirs.add(path);
+        state.collapsed.add(path);
+      }
+    });
+
+    const nodes = visibleNodes(root);
     const fragLeft = document.createDocumentFragment();
     const fragRight = document.createDocumentFragment();
 
-    entries.forEach((entry) => {
-      const depth = entry.path.split('/').length - 1;
-      const indent = '  '.repeat(depth);
-      const label = indent + entry.path.split('/').pop() + (entry.type === 'dir' ? '/' : '');
+    nodes.forEach((node) => {
+      const depth = node.path.split('/').length - 1;
+      const isDir = node.type === 'dir';
+      const collapsed = isDir && state.collapsed.has(node.path);
 
       let leftClass = 'row';
       let rightClass = 'row';
-      if (entry.status === 'only-right') {
+      if (node.status === 'only-right') {
         rightClass += ' r-ins';
         leftClass += ' r-void';
-      } else if (entry.status === 'only-left') {
+      } else if (node.status === 'only-left') {
         leftClass += ' r-del';
         rightClass += ' r-void';
-      } else if (entry.status === 'modified') {
+      } else if (node.status === 'modified') {
         leftClass += ' r-chg left';
         rightClass += ' r-chg right';
       }
-      if (entry.type === 'dir') {
+      if (isDir) {
         leftClass += ' r-dir';
         rightClass += ' r-dir';
       }
 
       const left = el('div', leftClass);
       const right = el('div', rightClass);
-      const leftText = el('span', 'tx', entry.status === 'only-right' ? '' : label);
-      const rightText = el('span', 'tx', entry.status === 'only-left' ? '' : label);
+      const leftLabel = el('span', 'tx');
+      const rightLabel = el('span', 'tx');
+      const leftText = el('span', 'tree-name', node.name);
+      const rightText = el('span', 'tree-name', node.name);
+
+      const buildLabel = (label, target) => {
+        const indent = el('span', 'indent', '');
+        indent.style.width = depth * 14 + 'px';
+        label.appendChild(indent);
+        if (isDir) {
+          const toggle = el('span', 'tree-toggle', collapsed ? '▶' : '▼');
+          toggle.title = collapsed ? text('folder.expand', 'Expand') : text('folder.collapse', 'Collapse');
+          toggle.addEventListener('click', (event) => {
+            event.stopPropagation();
+            toggleDirectory(node.path);
+          });
+          label.appendChild(toggle);
+        }
+        label.appendChild(target);
+      };
+
+      buildLabel(leftLabel, leftText);
+      buildLabel(rightLabel, rightText);
+
       left.appendChild(el('span', 'ln hidden', ''));
       right.appendChild(el('span', 'ln hidden', ''));
-      left.appendChild(leftText);
-      right.appendChild(rightText);
+      left.appendChild(leftLabel);
+      right.appendChild(rightLabel);
 
-      if (entry.leftUri) {
+      const entry = node.entry;
+      if (entry && entry.leftUri) {
         left.classList.add('clickable');
-        left.title = '点击在编辑器中打开';
+        left.title = text('openInEditor', 'Click to open in the editor');
         left.addEventListener('click', () => vscode.postMessage({ type: 'openFile', uri: entry.leftUri }));
       }
-      if (entry.rightUri) {
+      if (entry && entry.rightUri) {
         right.classList.add('clickable');
-        right.title = '点击在编辑器中打开';
+        right.title = text('openInEditor', 'Click to open in the editor');
         right.addEventListener('click', () => vscode.postMessage({ type: 'openFile', uri: entry.rightUri }));
       }
 
@@ -313,8 +453,8 @@
       fragRight.appendChild(right);
       state.rows.push({ left: left, right: right, leftText: leftText, rightText: rightText });
       state.searchText.push({
-        left: entry.status === 'only-right' ? '' : entry.path,
-        right: entry.status === 'only-left' ? '' : entry.path,
+        left: node.status === 'only-right' ? '' : node.name,
+        right: node.status === 'only-left' ? '' : node.name,
       });
     });
 
@@ -322,16 +462,32 @@
     ui.rightRows.appendChild(fragRight);
     measureRowHeight();
 
-    entries.forEach((entry, index) => {
-      if (entry.status === 'same') {
+    nodes.forEach((node, index) => {
+      if (node.status === 'same') {
         return;
       }
-      const left = arrowButton('left', { type: 'syncEntry', path: entry.path }, '把右侧这一项同步到左侧');
-      const right = arrowButton('right', { type: 'syncEntry', path: entry.path }, '把左侧这一项同步到右侧');
+      const left = arrowButton('left', { type: 'syncEntry', path: node.path }, text('arrow.entryLeft', 'Copy this entry to the left side'));
+      const right = arrowButton('right', { type: 'syncEntry', path: node.path }, text('arrow.entryRight', 'Copy this entry to the right side'));
       const statusText =
-        entry.status === 'only-right' ? '仅右侧' : entry.status === 'only-left' ? '仅左侧' : '内容不同';
+        node.status === 'only-right'
+          ? text('gutter.onlyRight', 'Right only')
+          : node.status === 'only-left'
+            ? text('gutter.onlyLeft', 'Left only')
+            : text('gutter.different', 'Different');
       addGutterItem(index, [left, right], statusText);
     });
+  }
+
+  /** 展开 / 折叠一个目录，然后重新渲染目录视图。 */
+  function toggleDirectory(path) {
+    if (state.collapsed.has(path)) {
+      state.collapsed.delete(path);
+    } else {
+      state.collapsed.add(path);
+    }
+    if (state.payload && state.payload.kind === 'folder') {
+      render(state.payload);
+    }
   }
 
   function measureRowHeight() {
@@ -375,15 +531,15 @@
     ui.leftTitle.textContent =
       payload && payload.left
         ? payload.left.name + (payload.left.path ? ' · ' + payload.left.path : '')
-        : '未选择';
+        : text('pane.notSelected', 'Not selected');
     ui.leftTitle.title =
-      payload && payload.left ? payload.left.path || payload.left.name : '未选择';
+      payload && payload.left ? payload.left.path || payload.left.name : '';
     ui.rightTitle.textContent =
       payload && payload.right
         ? payload.right.name + (payload.right.path ? ' · ' + payload.right.path : '')
-        : '未选择';
+        : text('pane.notSelected', 'Not selected');
     ui.rightTitle.title =
-      payload && payload.right ? payload.right.path || payload.right.name : '未选择';
+      payload && payload.right ? payload.right.path || payload.right.name : '';
 
     if (!payload || payload.kind === 'none') {
       renderEmpty();
@@ -455,7 +611,7 @@
       return;
     }
     if (!state.matches.length) {
-      ui.searchCount.textContent = ui.searchInput.value ? '无结果' : '';
+      ui.searchCount.textContent = ui.searchInput.value ? text('search.noResult', 'No results') : '';
       return;
     }
     ui.searchCount.textContent = `${state.matchIndex + 1} / ${state.matches.length}`;
@@ -463,26 +619,26 @@
 
   function clearHighlights() {
     state.rows.forEach((row, index) => {
-      const text = state.searchText[index] || { left: '', right: '' };
+      const value = state.searchText[index] || { left: '', right: '' };
       if (row.leftText) {
-        row.leftText.textContent = text.left;
+        row.leftText.textContent = value.left;
       }
       if (row.rightText) {
-        row.rightText.textContent = text.right;
+        row.rightText.textContent = value.right;
       }
     });
   }
 
-  function markUp(text, ranges) {
+  function markUp(value, ranges) {
     let html = '';
     let cursor = 0;
     ranges.forEach((range) => {
-      html += escapeHtml(text.slice(cursor, range.start));
+      html += escapeHtml(value.slice(cursor, range.start));
       const isCurrent = state.matches[state.matchIndex] === range;
-      html += '<mark' + (isCurrent ? ' class="current"' : '') + '>' + escapeHtml(text.slice(range.start, range.end)) + '</mark>';
+      html += '<mark' + (isCurrent ? ' class="current"' : '') + '>' + escapeHtml(value.slice(range.start, range.end)) + '</mark>';
       cursor = range.end;
     });
-    html += escapeHtml(text.slice(cursor));
+    html += escapeHtml(value.slice(cursor));
     return html;
   }
 
@@ -496,8 +652,8 @@
     });
     byRow.forEach((list, rowIndex) => {
       const row = state.rows[rowIndex];
-      const text = state.searchText[rowIndex];
-      if (!row || !text) {
+      const value = state.searchText[rowIndex];
+      if (!row || !value) {
         return;
       }
       ['left', 'right'].forEach((side) => {
@@ -507,10 +663,10 @@
         }
         const ranges = list.filter((match) => match.side === side);
         if (!ranges.length) {
-          target.textContent = text[side];
+          target.textContent = value[side];
           return;
         }
-        target.innerHTML = markUp(text[side], ranges);
+        target.innerHTML = markUp(value[side], ranges);
       });
     });
   }
@@ -527,11 +683,11 @@
     const needle = query.toLowerCase();
     state.searchText.forEach((row, index) => {
       ['left', 'right'].forEach((side) => {
-        const text = row[side] || '';
-        if (!text) {
+        const value = row[side] || '';
+        if (!value) {
           return;
         }
-        const lower = text.toLowerCase();
+        const lower = value.toLowerCase();
         let pos = lower.indexOf(needle);
         while (pos !== -1) {
           state.matches.push({ row: index, side: side, start: pos, end: pos + needle.length });
@@ -595,13 +751,13 @@
   // ---------------------------------------------------------------- toolbar
 
   ui.btnNew.addEventListener('click', () => vscode.postMessage({ type: 'newPanel' }));
-  ui.btnWorkspace.addEventListener('click', () => vscode.postMessage({ type: 'addWorkspaceFolder' }));
   ui.btnPick.addEventListener('click', () => vscode.postMessage({ type: 'pickTarget' }));
   ui.btnRefresh.addEventListener('click', () => {
-    setStatus('正在重新比较…');
+    setStatus(text('status.reloading', 'Comparing again...'));
     vscode.postMessage({ type: 'refresh' });
   });
   ui.btnSwap.addEventListener('click', () => vscode.postMessage({ type: 'swap' }));
+  ui.btnUndo.addEventListener('click', () => vscode.postMessage({ type: 'undo' }));
   ui.btnClear.addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
   ui.btnFind.addEventListener('click', () => openSearch());
   ui.syncAllLeft.addEventListener('click', () => vscode.postMessage({ type: 'syncAll', target: 'left' }));
@@ -613,11 +769,7 @@
   Array.prototype.forEach.call(document.querySelectorAll('.mini'), (button) => {
     button.addEventListener('click', () => {
       const action = button.dataset.action;
-      if (action === 'active-left') {
-        vscode.postMessage({ type: 'addActiveEditor', side: 'left' });
-      } else if (action === 'active-right') {
-        vscode.postMessage({ type: 'addActiveEditor', side: 'right' });
-      } else if (action === 'pick-left') {
+      if (action === 'pick-left') {
         vscode.postMessage({ type: 'pickTarget', side: 'left' });
       } else if (action === 'pick-right') {
         vscode.postMessage({ type: 'pickTarget', side: 'right' });
@@ -697,7 +849,7 @@
       body.classList.remove('drag-over');
       const uris = extractUris(event.dataTransfer || { getData: function () { return ''; } });
       if (!uris.length) {
-        setStatus('无法识别拖入的内容，请改用工具栏的「添加文件」按钮。', true);
+        setStatus(text('status.dropFailed', 'Cannot read the dropped content.'), true);
         return;
       }
       vscode.postMessage({ type: 'drop', side: side, uris: uris });
@@ -726,9 +878,15 @@
         render(message.payload);
         break;
       case 'state':
+        if (message.strings) {
+          Object.keys(message.strings).forEach((key) => {
+            strings[key] = message.strings[key];
+          });
+        }
         state.viewMode = message.viewMode;
         state.hasLeft = message.hasLeft;
         state.hasRight = message.hasRight;
+        state.canUndo = Boolean(message.canUndo);
         updateModeButtons();
         updateButtons();
         break;
@@ -750,14 +908,14 @@
   });
 
   window.addEventListener('error', (event) => {
-    const message = event && event.message ? event.message : '未知错误';
-    setStatus(`界面错误：${message}`, true);
+    const message = event && event.message ? event.message : 'unknown error';
+    setStatus(text('status.uiError', 'Interface error').replace('{message}', message), true);
     vscode.postMessage({ type: 'log', message: `webview error: ${message}` });
   });
 
   window.addEventListener('unhandledrejection', (event) => {
-    const reason = event && event.reason ? String(event.reason) : '未知错误';
-    setStatus(`界面错误：${reason}`, true);
+    const reason = event && event.reason ? String(event.reason) : 'unknown error';
+    setStatus(text('status.uiError', 'Interface error').replace('{message}', reason), true);
     vscode.postMessage({ type: 'log', message: `webview rejection: ${reason}` });
   });
 

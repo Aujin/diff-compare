@@ -1,5 +1,7 @@
 /** Shared message and payload types between the extension host and the webview. */
 
+import type { Locale } from './i18n'
+
 export type Side = 'left' | 'right'
 
 export type ViewMode = 'text' | 'hex' | 'binary'
@@ -147,11 +149,20 @@ export type HostMessage =
   | { type: 'syncAll'; target: Side }
   | { type: 'openFile'; uri: string }
   | { type: 'focusSearch' }
+  | { type: 'undo' }
   | { type: 'log'; message: string }
 
 export type WebviewMessage =
   | { type: 'comparison'; payload: ComparisonPayload }
-  | { type: 'state'; viewMode: ViewModeSetting; hasLeft: boolean; hasRight: boolean }
+  | {
+      type: 'state'
+      viewMode: ViewModeSetting
+      hasLeft: boolean
+      hasRight: boolean
+      canUndo: boolean
+      locale: Locale
+      strings: Record<string, string>
+    }
   | { type: 'error'; message: string }
   | { type: 'info'; message: string }
   | { type: 'busy'; busy: boolean }

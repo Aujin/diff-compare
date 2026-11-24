@@ -80,6 +80,8 @@ const state = {
   panels: [],
   quickPickCalls: [],
   quickPickHandler: undefined,
+  openDialogCalls: [],
+  openDialogHandler: undefined,
   commands: new Map(),
   logLines: [],
   warnings: [],
@@ -170,7 +172,13 @@ const vscode = {
       }
       return undefined;
     },
-    showOpenDialog: async () => undefined,
+    showOpenDialog: async (options) => {
+      state.openDialogCalls.push(options);
+      if (state.openDialogHandler) {
+        return state.openDialogHandler(options);
+      }
+      return undefined;
+    },
     showTextDocument: async () => undefined,
     registerWebviewPanelSerializer: () => ({ dispose() {} }),
     registerUriHandler: (handler) => {
@@ -191,7 +199,7 @@ const vscode = {
     },
     executeCommand: async () => undefined,
   },
-  env: { appName: 'Diff Compare Harness' },
+  env: { appName: 'Diff Compare Harness', language: 'zh-cn' },
 };
 
 const originalLoad = Module._load;
@@ -319,7 +327,7 @@ const context = {
 extension.activate(context);
 
 section('activation');
-check('13 个命令已注册', state.commands.size === 13, `实际 ${state.commands.size}`);
+check('14 个命令已注册', state.commands.size === 14, `实际 ${state.commands.size}`);
 check('激活日志已写入', state.logLines.some((line) => line.includes('已激活')));
 
 await state.commands.get('diffCompare.open')();
@@ -331,9 +339,19 @@ check(
 );
 check(
   'HTML 含工具栏按钮',
-  ['btn-workspace', 'btn-pick', 'btn-swap', 'btn-clear', 'btn-find'].every((id) =>
-    state.panel.webview.html.includes(`id="${id}"`),
-  ),
+  [
+    'btn-new',
+    'btn-pick',
+    'btn-refresh',
+    'btn-swap',
+    'btn-undo',
+    'btn-clear',
+    'btn-find',
+  ].every((id) => state.panel.webview.html.includes(`id="${id}"`)),
+);
+check(
+  'HTML 不再包含已删除的工作区文件夹按钮',
+  !state.panel.webview.html.includes('btn-workspace'),
 );
 
 await send({ type: 'ready' });
@@ -470,6 +488,30 @@ await state.commands.get('diffCompare.newPanel')();
 check('新建了第二个对比标签页', state.panels.length === 2, `实际 ${state.panels.length}`);
 const firstPanel = state.panels[0];
 const secondPanel = state.panels[1];
+check(
+  '标签页标题带上了序号',
+  /^Diff Compare \d+$/.test(String(firstPanel.title)),
+  firstPanel.title,
+);
+check(
+  '两个标签页的序号不同',
+  firstPanel.title !== secondPanel.title,
+  `${firstPanel.title} / ${secondPanel.title}`,
+);
+await state.commands.get('diffCompare.open')();
+check(
+  '打开对比面板会新增一个标签页',
+  state.panels.length === 3,
+  `实际 ${state.panels.length}`,
+);
+check(
+  '新增的标签页序号继续递增',
+  /^Diff Compare 3$/.test(String(state.panels[2].title)),
+  state.panels[2].title,
+);
+state.panels[2].dispose?.();
+state.panels.pop();
+state.receive = secondPanel.receive;
 await send({ type: 'ready' }); // state.receive 现在指向第二个标签页
 check(
   '第二个标签页初始为空',
@@ -491,8 +533,8 @@ check(
   lastPayloadOf(firstPanel)?.left?.path,
 );
 check(
-  '标签页标题带上了文件名',
-  String(firstPanel.title).includes('other.txt'),
+  '标签页标题带上了序号',
+  /^Diff Compare \d+$/.test(String(firstPanel.title)),
   firstPanel.title,
 );
 check(
@@ -544,6 +586,104 @@ check(
   '工具栏新建按钮可以再开一个标签页',
   state.panels.length === panelsBefore + 1,
   `实际 ${state.panels.length}`,
+);
+check(
+  '每个标签页的序号不同',
+  new Set(state.panels.map((panel) => panel.title)).size === state.panels.length,
+  state.panels.map((panel) => panel.title).join(' / '),
+);
+
+section('撤销上一次同步');
+// 在第 2 个标签页上做一次同步，然后撤销。
+await state.panels[1].receive({ type: 'ready' });
+const undoTarget = join(right, 'sample.txt');
+writeFileSync(undoTarget, 'alpha\nBRAVO!\ncharlie\n', 'utf8');
+await state.panels[1].receive({
+  type: 'drop',
+  side: 'left',
+  uris: [uriOf(join(left, 'sample.txt'))],
+});
+await state.panels[1].receive({
+  type: 'drop',
+  side: 'right',
+  uris: [uriOf(undoTarget)],
+});
+await new Promise((resolve) => setTimeout(resolve, 200));
+const undoPayload = lastPayloadOf(state.panels[1]);
+const undoHunk = undoPayload?.text?.hunks?.[0];
+check('撤销前存在差异块', Boolean(undoHunk));
+if (undoHunk) {
+  await state.panels[1].receive({
+    type: 'syncHunk',
+    hunkId: undoHunk.id,
+    target: 'right',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  check(
+    '同步后右文件被改写',
+    readFileSync(undoTarget, 'utf8') === 'alpha\nbravo\ncharlie\n',
+    JSON.stringify(readFileSync(undoTarget, 'utf8')),
+  );
+  await state.panels[1].receive({ type: 'undo' });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  check(
+    '撤销后文件恢复原样',
+    readFileSync(undoTarget, 'utf8') === 'alpha\nBRAVO!\ncharlie\n',
+    JSON.stringify(readFileSync(undoTarget, 'utf8')),
+  );
+  check(
+    '撤销后重新比较仍然显示差异',
+    (lastPayloadOf(state.panels[1])?.text?.hunks?.length ?? 0) === 1,
+    lastPayloadOf(state.panels[1])?.text?.hunks?.length,
+  );
+}
+
+section('选择文件只加入一侧');
+const pickPanel = state.panels[state.panels.length - 1];
+await pickPanel.receive({ type: 'ready' });
+state.openDialogHandler = () => [Uri.file(join(left, 'other.txt'))];
+state.quickPickHandler = async (items) =>
+  items.find((item) => item.label === '左侧' || item.label === 'Left');
+await state.commands.get('diffCompare.pickTarget')();
+await new Promise((resolve) => setTimeout(resolve, 200));
+const pickPayload = lastPayloadOf(pickPanel);
+check('选择对话框默认打开在工作区', state.openDialogCalls.length > 0);
+check(
+  '文件只加入了一侧',
+  Boolean(pickPayload?.left?.path) !== Boolean(pickPayload?.right?.path),
+  JSON.stringify({
+    left: pickPayload?.left?.path,
+    right: pickPayload?.right?.path,
+  }),
+);
+state.openDialogHandler = undefined;
+state.quickPickHandler = undefined;
+
+section('双语资源');
+const i18n = require(join(root, 'dist', 'i18n.js'));
+const zh = i18n.tableFor('zh-cn');
+const en = i18n.tableFor('en');
+const zhKeys = Object.keys(zh).sort();
+const enKeys = Object.keys(en).sort();
+check(
+  '中英文词条数量一致',
+  zhKeys.length === enKeys.length,
+  `中文 ${zhKeys.length} / 英文 ${enKeys.length}`,
+);
+check(
+  '中英文词条完全对应',
+  zhKeys.join('|') === enKeys.join('|'),
+  zhKeys.filter((key) => !enKeys.includes(key)).join(', '),
+);
+check(
+  '英文词条确实是英文',
+  /^[A-Za-z]/.test(en['cmd.open']) && zh['cmd.open'] !== en['cmd.open'],
+  en['cmd.open'],
+);
+check(
+  '占位符可以替换',
+  i18n.t('zh-cn', 'menu.panelItem', { n: 3, summary: 'a ↔ b' }).includes('3'),
+  i18n.t('zh-cn', 'menu.panelItem', { n: 3, summary: 'a ↔ b' }),
 );
 
 section('清理');

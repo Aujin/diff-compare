@@ -6,6 +6,8 @@ import * as vscode from 'vscode';
 import { buildHexRows, diffBytes } from './binary';
 import { buildRows, diffLines } from './diff';
 import { compareDirectories } from './dirs';
+import { detectLocale, t, tableFor } from './i18n';
+import type { Locale } from './i18n';
 import { Logger } from './logger';
 import { PathGate } from './policy';
 import {
@@ -16,7 +18,10 @@ import {
   folderAction,
   hunkIsDestructive,
   rangeIsDestructive,
+  restoreSnapshot,
+  snapshotPath,
 } from './sync';
+import type { SnapshotEntry } from './sync';
 import { decodeText, isBinary, splitLines } from './text';
 import { renderHtml } from './webviewHtml';
 import type {
@@ -44,8 +49,16 @@ const MAX_FOLDER_ENTRIES = 20000;
 /** 一个对比标签页存档下来的左右两侧。 */
 interface SavedPane {
   id: string;
+  /** 标签页序号（标题里的数字）。 */
+  number?: number;
   left?: PaneItem;
   right?: PaneItem;
+}
+
+/** 一次同步操作的快照，用来撤销。 */
+interface UndoRecord {
+  label: string;
+  entries: SnapshotEntry[];
 }
 
 function createNonce(): string {
@@ -55,10 +68,6 @@ function createNonce(): string {
     nonce += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
   }
   return nonce;
-}
-
-function sideLabel(side: Side): string {
-  return side === 'left' ? '左' : '右';
 }
 
 /** Owns the Diff Compare webview and all the comparison logic behind it. */
@@ -72,13 +81,21 @@ export class ComparePanel {
   private static counter = 0;
   /** 已经被某个标签页认领的存档条目。 */
   private static readonly claimed = new Set<string>();
+  /** 已经用过的标签页序号。 */
+  private static readonly usedNumbers = new Set<number>();
 
   private readonly id: string;
+  /** 标签页序号（标题里的数字）。 */
+  private readonly number: number;
   private readonly panel: vscode.WebviewPanel;
   private readonly context: vscode.ExtensionContext;
   private readonly log: Logger;
   private readonly gate: PathGate;
+  private readonly locale: Locale;
+  private readonly strings: Record<string, string>;
   private readonly disposables: vscode.Disposable[] = [];
+  /** 可以撤销的同步操作（最后一次在最上面）。 */
+  private readonly undoStack: UndoRecord[] = [];
 
   private left: PaneItem | undefined;
   private right: PaneItem | undefined;
@@ -95,15 +112,18 @@ export class ComparePanel {
     this.context = context;
     this.log = log;
     this.gate = gate;
+    this.locale = detectLocale();
+    this.strings = tableFor(this.locale);
 
     ComparePanel.counter += 1;
     this.id = `${Date.now().toString(36)}-${ComparePanel.counter}`;
     ComparePanel.claimed.add(this.id);
 
     this.viewMode = context.workspaceState.get<ViewModeSetting>(VIEW_MODE_KEY, 'auto');
-    const saved = this.claimSavedPanes();
-    this.left = saved.left;
-    this.right = saved.right;
+    const saved = this.claimSavedPane();
+    this.left = saved?.left;
+    this.right = saved?.right;
+    this.number = ComparePanel.claimNumber(saved?.number);
 
     ComparePanel.panels.add(this);
     ComparePanel.activePanel = this;
@@ -112,6 +132,7 @@ export class ComparePanel {
       webview: this.panel.webview,
       extensionUri: context.extensionUri,
       nonce: createNonce(),
+      locale: this.locale,
     });
 
     this.disposables.push(
@@ -202,6 +223,9 @@ export class ComparePanel {
       viewMode: this.viewMode,
       hasLeft: Boolean(this.left),
       hasRight: Boolean(this.right),
+      canUndo: this.undoStack.length > 0,
+      locale: this.locale,
+      strings: this.strings,
     });
   }
 
@@ -209,7 +233,12 @@ export class ComparePanel {
     // 自己的存档永远不再被别人认领（否则新建标签页会复制已有标签页的内容）。
     ComparePanel.claimed.add(this.id);
     const saved = this.readSavedPanes().filter((entry) => entry.id !== this.id);
-    saved.push({ id: this.id, left: this.left, right: this.right });
+    saved.push({
+      id: this.id,
+      number: this.number,
+      left: this.left,
+      right: this.right,
+    });
     void this.context.workspaceState.update(PANES_KEY, saved);
   }
 
@@ -228,14 +257,28 @@ export class ComparePanel {
    * 认领一条存档：窗口重载后恢复标签页时，每个标签页认领一条自己的内容，
    * 这样可以同时恢复多个对比标签页。
    */
-  private claimSavedPanes(): { left?: PaneItem; right?: PaneItem } {
+  private claimSavedPane(): SavedPane | undefined {
     for (const entry of this.readSavedPanes()) {
       if (!ComparePanel.claimed.has(entry.id)) {
         ComparePanel.claimed.add(entry.id);
-        return { left: entry.left, right: entry.right };
+        return entry;
       }
     }
-    return {};
+    return undefined;
+  }
+
+  /** 领取标签页序号（标题里的数字），优先使用存档里的序号。 */
+  private static claimNumber(saved?: number): number {
+    if (saved && !ComparePanel.usedNumbers.has(saved)) {
+      ComparePanel.usedNumbers.add(saved);
+      return saved;
+    }
+    let candidate = 1;
+    while (ComparePanel.usedNumbers.has(candidate)) {
+      candidate += 1;
+    }
+    ComparePanel.usedNumbers.add(candidate);
+    return candidate;
   }
 
   private async onMessage(message: HostMessage): Promise<void> {
@@ -245,7 +288,7 @@ export class ComparePanel {
           await this.refresh();
           break;
         case 'refresh':
-          await this.refresh('已重新比较两侧内容。');
+          await this.refresh(this.text('info.refreshed'));
           break;
         case 'newPanel': {
           const created = ComparePanel.create(this.context, this.log, this.gate);
@@ -285,6 +328,9 @@ export class ComparePanel {
         case 'syncAll':
           await this.syncAll(message.target);
           break;
+        case 'undo':
+          await this.undo();
+          break;
         case 'openFile':
           await this.openFile(message.uri);
           break;
@@ -298,7 +344,7 @@ export class ComparePanel {
           break;
       }
     } catch (error) {
-      this.log.error('处理消息失败', error);
+      this.log.error(this.text('log.messageFailed'), error);
       const text = error instanceof Error ? error.message : String(error);
       this.post({ type: 'error', message: text });
     }
@@ -309,7 +355,7 @@ export class ComparePanel {
   async addWorkspaceFolder(side?: Side): Promise<void> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) {
-      void vscode.window.showWarningMessage('当前没有打开的工作区文件夹。');
+      void vscode.window.showWarningMessage(this.text('warn.noWorkspace'));
       return;
     }
     let folder = folders[0];
@@ -320,14 +366,14 @@ export class ComparePanel {
           description: item.uri.fsPath,
           folder: item,
         })),
-        { placeHolder: '选择要加入比较的工作区文件夹' },
+        { placeHolder: this.text('warn.workspacePick') },
       );
       if (!picked) {
         return;
       }
       folder = picked.folder;
     }
-    const target = side ?? (await this.chooseSide());
+    const target = side ?? (await this.chooseSide(folder.name));
     if (!target) {
       return;
     }
@@ -340,24 +386,30 @@ export class ComparePanel {
     await this.refresh();
   }
 
+  /**
+   * 选择要比较的文件或文件夹。
+   *
+   * 没有指定某一栏时，先弹出文件选择框；选完之后再问放进左边还是右边，
+   * 这样「添加文件」不会一次把同一个文件塞进两栏。
+   */
   async pickTarget(side?: Side): Promise<void> {
-    const target = side ?? (await this.chooseSide());
-    if (!target) {
-      return;
-    }
     const picked = await vscode.window.showOpenDialog({
       canSelectFiles: true,
       canSelectFolders: true,
       canSelectMany: false,
       defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
-      openLabel: '加入比较',
-      title: '选择要比较的文件或文件夹',
+      openLabel: this.text('dialog.pickButton'),
+      title: this.text('dialog.pickTitle'),
     });
     if (!picked || picked.length === 0) {
       return;
     }
     const item = await this.resolveTarget(picked[0]);
     if (!item) {
+      return;
+    }
+    const target = side ?? (await this.chooseSide(item.name));
+    if (!target) {
       return;
     }
     this.setSide(target, item);
@@ -367,12 +419,12 @@ export class ComparePanel {
   async addActiveEditor(side: Side): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
-      void vscode.window.showInformationMessage('当前没有活动的编辑器。');
+      void vscode.window.showInformationMessage(this.text('warn.noActiveEditor'));
       return;
     }
     const uri = editor.document.uri;
     if (uri.scheme !== 'file') {
-      void vscode.window.showInformationMessage('只能比较已经保存到磁盘的文件。');
+      void vscode.window.showInformationMessage(this.text('warn.notSaved'));
       return;
     }
     const item = await this.resolveTarget(uri);
@@ -427,7 +479,7 @@ export class ComparePanel {
     if (left && right) {
       return `${left} ↔ ${right}`;
     }
-    return left ?? right ?? '（空）';
+    return left ?? right ?? this.text('pane.notSelected');
   }
 
   /**
@@ -448,19 +500,22 @@ export class ComparePanel {
     const existing = this.sideItem(side);
     if (mode === 'add' && existing) {
       const picked = await vscode.window.showWarningMessage(
-        `${sideLabel(side)}侧已经有「${existing.name}」，要怎么处理？`,
+        this.text('dialog.replaceQuestion', {
+          side: this.sideLabelLong(side),
+          name: existing.name,
+        }),
         { modal: true },
-        '替换该栏',
-        '新建标签',
-        '取消',
+        this.text('dialog.replace'),
+        this.text('dialog.newTab'),
+        this.text('dialog.cancel'),
       );
-      if (picked === '新建标签') {
+      if (picked === this.text('dialog.newTab')) {
         const created = ComparePanel.create(this.context, this.log, this.gate);
         await created.placeItem(uri, side, 'replace');
         created.reveal();
         return true;
       }
-      if (picked !== '替换该栏') {
+      if (picked !== this.text('dialog.replace')) {
         return false;
       }
     }
@@ -476,7 +531,11 @@ export class ComparePanel {
    * 路径可以是绝对路径，也可以是相对于当前工作区第一个文件夹的相对路径。
    */
   async openPaths(leftPath?: string, rightPath?: string): Promise<void> {
-    this.log.info(`深链打开对比：left=${leftPath ?? '-'} right=${rightPath ?? '-'}`);
+    this.log.info(
+      this.text('log.deepLink', {
+        uri: `left=${leftPath ?? '-'} right=${rightPath ?? '-'}`,
+      }),
+    );
     const targets: Array<[Side, string | undefined]> = [
       ['left', leftPath],
       ['right', rightPath],
@@ -489,10 +548,10 @@ export class ComparePanel {
       if (item) {
         this.setSide(side, item);
       } else {
-        this.log.warn(`深链路径无法使用：${target}`);
+        this.log.warn(this.text('log.deepLinkFailed', { path: target }));
       }
     }
-    await this.refresh('已按链接打开对比。');
+    await this.refresh(this.text('info.deepLink'));
   }
 
   /** 绝对路径直接用；相对路径按工作区第一个文件夹解析。 */
@@ -509,6 +568,21 @@ export class ComparePanel {
 
   // ------------------------------------------------------------- internals
 
+  /** 取当前语言下的文案。 */
+  private text(key: string, params?: Record<string, string | number>): string {
+    return t(this.locale, key, params);
+  }
+
+  /** 某一侧的长名称（左侧 / 右侧）。 */
+  private sideLabelLong(side: Side): string {
+    return this.text(side === 'left' ? 'side.leftLong' : 'side.rightLong');
+  }
+
+  /** 另一侧（同步来源）。 */
+  private otherSide(side: Side): Side {
+    return side === 'left' ? 'right' : 'left';
+  }
+
   private setSide(side: Side, item: PaneItem): void {
     if (side === 'left') {
       this.left = item;
@@ -519,22 +593,12 @@ export class ComparePanel {
     this.updateTitle();
   }
 
-  /** 标签页标题带上左右两侧的文件名，方便区分多个对比标签页。 */
+  /** 标签页标题：Diff Compare 1、Diff Compare 2 … */
   private updateTitle(): void {
-    const left = this.left?.name;
-    const right = this.right?.name;
-    if (left && right) {
-      this.panel.title = `Diff Compare · ${left} ↔ ${right}`;
-    } else if (left) {
-      this.panel.title = `Diff Compare · ${left}`;
-    } else if (right) {
-      this.panel.title = `Diff Compare · ${right}`;
-    } else {
-      this.panel.title = 'Diff Compare';
-    }
+    this.panel.title = `Diff Compare ${this.number}`;
   }
 
-  private async chooseSide(): Promise<Side | undefined> {
+  private async chooseSide(name?: string): Promise<Side | undefined> {
     if (!this.left) {
       return 'left';
     }
@@ -543,17 +607,21 @@ export class ComparePanel {
     }
     const picked = await vscode.window.showQuickPick(
       [
-        { label: '左侧', side: 'left' as Side },
-        { label: '右侧', side: 'right' as Side },
+        { label: this.text('menu.sideLeft'), side: 'left' as Side },
+        { label: this.text('menu.sideRight'), side: 'right' as Side },
       ],
-      { placeHolder: '选择要加入哪一侧' },
+      {
+        placeHolder: name
+          ? this.text('dialog.sideQuestionWithName', { name })
+          : this.text('dialog.sideQuestion'),
+      },
     );
     return picked?.side;
   }
 
   private async resolveTarget(uri: vscode.Uri): Promise<PaneItem | undefined> {
     if (uri.scheme !== 'file') {
-      void vscode.window.showWarningMessage('目前只支持比较本地文件。');
+      void vscode.window.showWarningMessage(this.text('warn.unsupportedScheme'));
       return undefined;
     }
     const fsPath = uri.fsPath;
@@ -564,7 +632,9 @@ export class ComparePanel {
     try {
       stat = await fs.stat(fsPath);
     } catch {
-      void vscode.window.showErrorMessage(`无法读取：${fsPath}`);
+      void vscode.window.showErrorMessage(
+        this.text('warn.readFailed', { path: fsPath }),
+      );
       return undefined;
     }
     return {
@@ -596,7 +666,7 @@ export class ComparePanel {
     const chosen = folder ?? items[0];
     if (!folder && items.length > 1) {
       void vscode.window.showInformationMessage(
-        `拖入了 ${items.length} 个文件，已使用第一个：${chosen.name}`,
+        this.text('warn.droppedMultiple', { n: items.length, name: chosen.name }),
       );
     }
     this.setSide(side, chosen);
@@ -608,7 +678,7 @@ export class ComparePanel {
       const uri = vscode.Uri.parse(uriText, true);
       await vscode.window.showTextDocument(uri, { preview: true });
     } catch (error) {
-      this.log.error('打开文件失败', error);
+      this.log.error(this.text('log.openFailed'), error);
     }
   }
 
@@ -643,9 +713,14 @@ export class ComparePanel {
         this.post({ type: 'info', message: info });
       }
     } catch (error) {
-      this.log.error('比较失败', error);
+      this.log.error(this.text('log.compareFailed', {
+        message: error instanceof Error ? error.message : String(error),
+      }));
       const text = error instanceof Error ? error.message : String(error);
-      this.post({ type: 'error', message: `比较失败：${text}` });
+      this.post({
+        type: 'error',
+        message: this.text('log.compareFailed', { message: text }),
+      });
     } finally {
       this.post({ type: 'busy', busy: false });
     }
@@ -658,7 +733,7 @@ export class ComparePanel {
         viewMode: 'text',
         left: this.describe(left),
         right: this.describe(right),
-        notice: '一侧是文件、另一侧是目录，无法直接比较。',
+        notice: this.text('warn.mismatch'),
       };
     }
     if (left.kind === 'folder') {
@@ -703,7 +778,9 @@ export class ComparePanel {
         viewMode: 'text',
         left: leftInfo,
         right: rightInfo,
-        notice: `文件超过 ${Math.round(maxFileSize / 1024 / 1024)} MB 上限，未进行比较。`,
+        notice: this.text('warn.tooLarge', {
+          size: Math.round(maxFileSize / 1024 / 1024),
+        }),
       };
     }
 
@@ -719,7 +796,7 @@ export class ComparePanel {
 
     if (viewMode === 'text' && binaryFile) {
       viewMode = 'hex';
-      notice = '检测到二进制内容，已自动切换到十六进制视图。';
+      notice = this.text('warn.binarySwitch');
     }
 
     const base: ComparisonPayload = {
@@ -804,8 +881,8 @@ export class ComparePanel {
 
     const differing = entries.filter((entry) => entry.status !== 'same').length;
     const notice = result.truncated
-      ? `条目过多，仅显示前 ${entries.length} 条。`
-      : `共 ${differing} 处差异。`;
+      ? this.text('info.folderTruncated', { n: entries.length })
+      : this.text('info.folderDiff', { n: differing });
 
     return {
       kind: 'folder',
@@ -848,16 +925,28 @@ export class ComparePanel {
     }
     if (action === 'delete') {
       const confirmed = await vscode.window.showWarningMessage(
-        `${sideLabel(target === 'left' ? 'right' : 'left')}侧没有「${entryPath}」，同步将删除${sideLabel(target)}侧的该文件，确定继续吗？`,
+        this.text('warn.destroyFolderItem', {
+          path: entryPath,
+          other: this.sideLabelLong(this.otherSide(target)),
+          side: this.sideLabelLong(target),
+        }),
         { modal: true },
-        '继续',
+        this.text('dialog.continue'),
       );
-      if (confirmed !== '继续') {
+      if (confirmed !== this.text('dialog.continue')) {
         return;
       }
     }
+    const targetRoot = target === 'left' ? left.path : right.path;
+    const snapshot = await snapshotPath(path.join(targetRoot, entry.path));
     await applyFolderAction(left.path, right.path, entry, target);
-    await this.refresh(`已把${sideLabel(target === 'left' ? 'right' : 'left')}侧的内容同步到${sideLabel(target)}侧。`);
+    this.pushUndo(entry.path, snapshot);
+    await this.refresh(
+      this.text('info.syncedSide', {
+        other: this.sideLabelLong(this.otherSide(target)),
+        side: this.sideLabelLong(target),
+      }),
+    );
   }
 
   async syncAll(target: Side): Promise<void> {
@@ -871,21 +960,34 @@ export class ComparePanel {
       if (!left || !right) {
         return;
       }
-      const destructive = payload.folder.entries.some(
+      const changed = payload.folder.entries.filter(
+        (entry) => folderAction(entry, target) !== 'none',
+      );
+      const destructive = changed.some(
         (entry) => folderAction(entry, target) === 'delete',
       );
       if (destructive) {
         const confirmed = await vscode.window.showWarningMessage(
-          `同步会删除${sideLabel(target)}侧仅存在的文件，确定继续吗？`,
+          this.text('warn.destroyFolderAll', {
+            side: this.sideLabelLong(target),
+          }),
           { modal: true },
-          '继续',
+          this.text('dialog.continue'),
         );
-        if (confirmed !== '继续') {
+        if (confirmed !== this.text('dialog.continue')) {
           return;
         }
       }
+      const targetRoot = target === 'left' ? left.path : right.path;
+      const snapshot: SnapshotEntry[] = [];
+      for (const entry of changed) {
+        snapshot.push(...(await snapshotPath(path.join(targetRoot, entry.path))));
+      }
       await applyFolderAll(left.path, right.path, payload.folder.entries, target);
-      await this.refresh(`已把所有差异同步到${sideLabel(target)}侧。`);
+      this.pushUndo(this.text('info.syncedAll', { side: this.sideLabelLong(target) }), snapshot);
+      await this.refresh(
+        this.text('info.syncedAll', { side: this.sideLabelLong(target) }),
+      );
       return;
     }
     if (payload.kind === 'file' && payload.text) {
@@ -901,22 +1003,27 @@ export class ComparePanel {
     const targetItem = target === 'left' ? this.left : this.right;
     const sourceItem = target === 'left' ? this.right : this.left;
     if (!targetItem || !sourceItem) {
-      this.post({ type: 'error', message: '请先在两侧都选择要比较的内容。' });
+      this.post({ type: 'error', message: this.text('warn.needBoth') });
       return;
     }
     if (hunkIsDestructive(hunks, target)) {
       const confirmed = await vscode.window.showWarningMessage(
-        `该操作会删除${sideLabel(target)}侧的部分内容，确定继续吗？`,
+        this.text('warn.destroyText', { side: this.sideLabelLong(target) }),
         { modal: true },
-        '继续',
+        this.text('dialog.continue'),
       );
-      if (confirmed !== '继续') {
+      if (confirmed !== this.text('dialog.continue')) {
         return;
       }
     }
+    const snapshot = await snapshotPath(targetItem.path);
     await applyHunks(targetItem.path, sourceItem.path, hunks, target);
+    this.pushUndo(targetItem.path, snapshot);
     await this.refresh(
-      `已把${sideLabel(target === 'left' ? 'right' : 'left')}侧的内容同步到${sideLabel(target)}侧。`,
+      this.text('info.syncedSide', {
+        other: this.sideLabelLong(this.otherSide(target)),
+        side: this.sideLabelLong(target),
+      }),
     );
   }
 
@@ -924,22 +1031,59 @@ export class ComparePanel {
     const targetItem = target === 'left' ? this.left : this.right;
     const sourceItem = target === 'left' ? this.right : this.left;
     if (!targetItem || !sourceItem) {
-      this.post({ type: 'error', message: '请先在两侧都选择要比较的内容。' });
+      this.post({ type: 'error', message: this.text('warn.needBoth') });
       return;
     }
     if (rangeIsDestructive(ranges, target)) {
       const confirmed = await vscode.window.showWarningMessage(
-        `该操作会删除${sideLabel(target)}侧的部分字节，确定继续吗？`,
+        this.text('warn.destroyBytes', { side: this.sideLabelLong(target) }),
         { modal: true },
-        '继续',
+        this.text('dialog.continue'),
       );
-      if (confirmed !== '继续') {
+      if (confirmed !== this.text('dialog.continue')) {
         return;
       }
     }
+    const snapshot = await snapshotPath(targetItem.path);
     await applyRanges(targetItem.path, sourceItem.path, ranges, target);
+    this.pushUndo(targetItem.path, snapshot);
     await this.refresh(
-      `已把${sideLabel(target === 'left' ? 'right' : 'left')}侧的字节同步到${sideLabel(target)}侧。`,
+      this.text('info.syncedBytes', {
+        other: this.sideLabelLong(this.otherSide(target)),
+        side: this.sideLabelLong(target),
+      }),
     );
+  }
+
+  // ------------------------------------------------------------- undo
+
+  /** 记录一次同步前的快照，之后可以撤销。 */
+  private pushUndo(label: string, entries: SnapshotEntry[]): void {
+    if (entries.length === 0) {
+      return;
+    }
+    this.undoStack.push({ label, entries });
+    if (this.undoStack.length > 20) {
+      this.undoStack.shift();
+    }
+  }
+
+  /** 撤销上一次同步。 */
+  async undo(): Promise<void> {
+    const record = this.undoStack.pop();
+    if (!record) {
+      this.post({ type: 'info', message: this.text('info.nothingToUndo') });
+      return;
+    }
+    try {
+      await restoreSnapshot(record.entries);
+    } catch (error) {
+      this.log.error(this.text('log.messageFailed'), error);
+      this.post({ type: 'error', message: this.text('log.compareFailed', {
+        message: error instanceof Error ? error.message : String(error),
+      }) });
+      return;
+    }
+    await this.refresh(this.text('info.undone'));
   }
 }

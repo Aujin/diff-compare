@@ -199,3 +199,76 @@ export async function applyFolderAll(
     await applyFolderAction(leftRoot, rightRoot, entry, target);
   }
 }
+
+// --------------------------------------------------------------- undo support
+
+/** One file (or directory) captured before a sync, so the sync can be undone. */
+export interface SnapshotEntry {
+  /** Absolute path that was about to be changed. */
+  path: string;
+  /** Content before the change; `null` when the path did not exist yet. */
+  content: Buffer | null;
+  /** True when the path was a directory before the change. */
+  directory: boolean;
+}
+
+/**
+ * Captures the current state of a path (file or whole directory tree).
+ *
+ * The result can be handed to `restoreSnapshot` to roll a sync back.
+ */
+export async function snapshotPath(target: string): Promise<SnapshotEntry[]> {
+  let stat;
+  try {
+    stat = await fs.stat(target);
+  } catch {
+    return [{ path: target, content: null, directory: false }];
+  }
+  if (!stat.isDirectory()) {
+    return [{ path: target, content: await fs.readFile(target), directory: false }];
+  }
+
+  const entries: SnapshotEntry[] = [
+    { path: target, content: null, directory: true },
+  ];
+  const walk = async (dir: string): Promise<void> => {
+    const items = await fs.readdir(dir, { withFileTypes: true });
+    for (const item of items) {
+      const full = path.join(dir, item.name);
+      if (item.isDirectory()) {
+        await walk(full);
+      } else if (item.isFile()) {
+        entries.push({ path: full, content: await fs.readFile(full), directory: false });
+      }
+    }
+  };
+  await walk(target);
+  return entries;
+}
+
+/** Restores a snapshot taken by `snapshotPath`. */
+export async function restoreSnapshot(entries: SnapshotEntry[]): Promise<void> {
+  // 先把目录整体删掉，再把文件写回去，保证目录结构与同步前一致。
+  for (const entry of entries) {
+    if (entry.directory) {
+      await fs.rm(entry.path, { recursive: true, force: true });
+    }
+  }
+  for (const entry of entries) {
+    if (entry.directory) {
+      continue;
+    }
+    if (entry.content === null) {
+      await fs.rm(entry.path, { force: true });
+      continue;
+    }
+    await fs.mkdir(path.dirname(entry.path), { recursive: true });
+    await fs.writeFile(entry.path, entry.content);
+  }
+}
+
+/** 把相对路径拼到根目录上（与 `applyFolderAction` 使用同样的规则）。 */
+export function resolveRelative(root: string, relative: string): string {
+  return joinRelative(root, relative);
+}
+
