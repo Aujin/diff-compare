@@ -15,6 +15,8 @@
 - **十六进制 / 二进制**文件打开时自动识别，顶部工具栏可随时切换 **文本 / 十六进制 / 二进制** 视图；
 - `Ctrl+F` 在两侧同时搜索并高亮所有匹配项，`Enter` / `Shift+Enter` / `F3` 逐个跳转。
 
+![对比面板](docs/panel.png)
+
 ---
 
 ## 目录
@@ -25,6 +27,7 @@
 - [视图模式](#视图模式)
 - [同步规则](#同步规则)
 - [搜索](#搜索)
+- [深链：直接打开指定的两侧](#深链直接打开指定的两侧)
 - [工作区之外的文件（访问策略）](#工作区之外的文件访问策略)
 - [设置项](#设置项)
 - [命令一览](#命令一览)
@@ -158,6 +161,34 @@
 - 状态栏显示 `第 n / 共 m 个匹配`；
 - `Enter` 跳到下一个匹配，`Shift+Enter` 跳到上一个，`F3` 同 `Enter`；
 - `Esc` 关闭查找栏。
+
+---
+
+## 深链：直接打开指定的两侧
+
+扩展注册了 `vscode://Aurumjin.diff-compare/open` 深链，可以从脚本、书签或
+其它扩展直接打开指定的两侧内容：
+
+```
+vscode://Aurumjin.diff-compare/open?left=<左侧路径>&right=<右侧路径>
+```
+
+- 两侧可以是**文件**（逐行 / 十六进制比较），也可以是**目录**（目录比较）；
+- 路径可以写**绝对路径**，也可以写相对于当前工作区的路径；
+- 路径仍然要过一遍[访问策略](#工作区之外的文件访问策略)；
+- 路径含空格或特殊字符时，用标准的百分号编码（`%20` 等）即可。
+
+例子（Windows）：
+
+```
+code --open-url "vscode://Aurumjin.diff-compare/open?left=D%3A%5Cproj%5Ca.js&right=D%3A%5Cproj%5Cb.js"
+```
+
+例子（macOS / Linux）：
+
+```
+code --open-url "vscode://Aurumjin.diff-compare/open?left=/home/me/proj/a.js&right=/home/me/proj/b.js"
+```
 
 ---
 

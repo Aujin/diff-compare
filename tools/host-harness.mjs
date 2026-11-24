@@ -146,6 +146,10 @@ const vscode = {
     showOpenDialog: async () => undefined,
     showTextDocument: async () => undefined,
     registerWebviewPanelSerializer: () => ({ dispose() {} }),
+    registerUriHandler: (handler) => {
+      state.uriHandler = handler;
+      return { dispose() {} };
+    },
     activeTextEditor: undefined,
   },
   workspace: {
@@ -389,6 +393,27 @@ section('类型不匹配');
 await send({ type: 'drop', side: 'left', uris: [uriOf(join(left, 'sample.txt'))] });
 await send({ type: 'drop', side: 'right', uris: [uriOf(right)] });
 check('比较结果为 mismatch', lastPayload()?.kind === 'mismatch', lastPayload()?.kind);
+
+section('URI 深链');
+check('已注册 URI 处理器', typeof state.uriHandler?.handleUri === 'function');
+if (typeof state.uriHandler?.handleUri === 'function') {
+  const query = `left=${encodeURIComponent(join(left, 'sample.txt'))}&right=${encodeURIComponent(join(right, 'sample.txt'))}`;
+  state.uriHandler.handleUri({ query });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const deepPayload = lastPayload();
+  check('深链打开文件对比', deepPayload?.kind === 'file', deepPayload?.kind);
+  check('深链两侧都是文本视图', deepPayload?.viewMode === 'text', deepPayload?.viewMode);
+
+  const relQuery = `left=${encodeURIComponent('left/sample.txt')}&right=${encodeURIComponent('right/sample.txt')}`;
+  state.uriHandler.handleUri({ query: relQuery });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const relPayload = lastPayload();
+  check(
+    '相对路径按工作区解析',
+    relPayload?.left?.path === join(left, 'sample.txt'),
+    relPayload?.left?.path,
+  );
+}
 
 section('工作区之外的路径');
 const outside = join(tmp, 'outside.txt');

@@ -355,6 +355,44 @@ export class ComparePanel {
     this.post({ type: 'focusSearch' });
   }
 
+  /**
+   * 直接指定左右两侧的路径，供 URI 深链使用：
+   * `vscode://Aurumjin.diff-compare/open?left=<路径>&right=<路径>`
+   *
+   * 路径可以是绝对路径，也可以是相对于当前工作区第一个文件夹的相对路径。
+   */
+  async openPaths(leftPath?: string, rightPath?: string): Promise<void> {
+    this.log.info(`深链打开对比：left=${leftPath ?? '-'} right=${rightPath ?? '-'}`);
+    const targets: Array<[Side, string | undefined]> = [
+      ['left', leftPath],
+      ['right', rightPath],
+    ];
+    for (const [side, target] of targets) {
+      if (!target) {
+        continue;
+      }
+      const item = await this.resolveTarget(this.toUri(target));
+      if (item) {
+        this.setSide(side, item);
+      } else {
+        this.log.warn(`深链路径无法使用：${target}`);
+      }
+    }
+    await this.refresh('已按链接打开对比。');
+  }
+
+  /** 绝对路径直接用；相对路径按工作区第一个文件夹解析。 */
+  private toUri(target: string): vscode.Uri {
+    if (path.isAbsolute(target)) {
+      return vscode.Uri.file(target);
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (folder) {
+      return vscode.Uri.file(path.resolve(folder.uri.fsPath, target));
+    }
+    return vscode.Uri.file(path.resolve(target));
+  }
+
   // ------------------------------------------------------------- internals
 
   private setSide(side: Side, item: PaneItem): void {

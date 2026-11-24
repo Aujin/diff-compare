@@ -65,6 +65,19 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     }),
   );
+
+  // 深链：vscode://Aurumjin.diff-compare/open?left=<路径>&right=<路径>
+  context.subscriptions.push(
+    vscode.window.registerUriHandler({
+      handleUri(uri: vscode.Uri) {
+        log.info(`收到深链：${uri.toString()}`);
+        const params = new URLSearchParams(uri.query);
+        const left = params.get('left') ?? undefined;
+        const right = params.get('right') ?? undefined;
+        void openPanel().openPaths(left, right);
+      },
+    }),
+  );
 }
 
 export function deactivate(): void {
